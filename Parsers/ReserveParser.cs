@@ -46,12 +46,6 @@ public static class ReserveParser
         return list;
     }
 
-    private static IEnumerable<string> ReadLines(StreamReader reader)
-    {
-        while (reader.ReadLine() is { } line)
-            yield return line;
-    }
-
     private static ReserveData? ParseLine(string line)
     {
         var f = line.Split('\t');

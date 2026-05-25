@@ -41,12 +41,6 @@ public static class RecInfoParser
         return list;
     }
 
-    private static IEnumerable<string> ReadLines(StreamReader reader)
-    {
-        while (reader.ReadLine() is { } line)
-            yield return line;
-    }
-
     private static RecFileInfo? ParseLine(string line)
     {
         var f = line.Split('\t');

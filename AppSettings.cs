@@ -8,7 +8,6 @@ public class AppSettings
     public string ReservePath { get; set; } = @"\\5600x\c\ap\edcb\Setting\Reserve.txt";
     public string RecordingFolder { get; set; } = @"\\5600x\d\PT2";
     public string PlayerPath { get; set; } = @"C:\ap\MPC-BE.1.8.1.x64\mpc-be64.exe";
-    public string NotifyLogPath { get; set; } = @"\\5600x\c\ap\edcb\EpgTimerSrvNotify.log";
     public int RefreshIntervalSeconds { get; set; } = 60;
 
     // RecInfo.txt のパスはサーバー側のローカルパス (例: D:\PT2\foo.ts)
