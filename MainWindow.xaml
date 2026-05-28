@@ -4,7 +4,8 @@
         Title="EDCB Viewer" Height="700" Width="1100" MinHeight="500" MinWidth="800"
         Background="#FF1E1E1E"
         PreviewKeyDown="Window_PreviewKeyDown"
-        KeyDown="Window_KeyDown">
+        KeyDown="Window_KeyDown"
+        Closing="Window_Closing">
     <Window.Resources>
         <Style TargetType="ListView">
             <Setter Property="Background" Value="#FF2D2D2D"/>
@@ -412,6 +413,11 @@
                             <TextBlock Style="{StaticResource InfoLabel}" Text="コメント"/>
                             <TextBox x:Name="ResComment" Style="{StaticResource SelectableValue}"
                                      FontSize="12"/>
+
+                            <TextBlock x:Name="ResProgramInfoLabel"
+                                       Style="{StaticResource InfoLabel}" Text="番組情報"/>
+                            <TextBox x:Name="ResProgramInfo" Style="{StaticResource SelectableValue}"
+                                     FontSize="12" TextWrapping="Wrap"/>
                         </StackPanel>
                     </ScrollViewer>
                 </Grid>

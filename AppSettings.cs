@@ -66,6 +66,12 @@ public class AppSettings
             "EDCBViewer",
             "settings.json");
 
+    public static string ProgInfoCachePath =>
+        Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "EDCBViewer",
+            "proginfo_cache.json");
+
     public static AppSettings Load()
     {
         try

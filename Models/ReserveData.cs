@@ -15,6 +15,8 @@ public class ReserveData
     public ushort ServiceID { get; set; }
     public ushort EventID { get; set; }
     public string Comment { get; set; } = "";
+    /// <summary>null = 未取得、"" = 取得済みで空、それ以外 = 番組説明テキスト</summary>
+    public string? ProgramInfo { get; set; } = null;
     public byte OverlapMode { get; set; }
     public DateTime StartTimeEpg { get; set; }
     public uint ReserveStatus { get; set; }

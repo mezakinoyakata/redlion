@@ -105,10 +105,51 @@ public class EmwuiClient(string baseUrl)
 
     // ── 予約リスト ────────────────────────────────────────────────────────────────
 
+    /// <summary>予約一覧を全件取得（サーバーが 500 件でキャップする場合にバッチ取得）。</summary>
     public async Task<List<ReserveData>> GetReserveInfoAsync()
     {
-        var xml = await _http.GetStringAsync($"{Base}/api/EnumReserveInfo?count=65535");
-        return ParseItemsWithTotal(xml, ParseResItem).items;
+        var all = new List<ReserveData>();
+        const int batch = 500;
+        int index = 0;
+        while (true)
+        {
+            var xml = await _http.GetStringAsync(
+                $"{Base}/api/EnumReserveInfo?count={batch}&index={index}");
+            var (items, total) = ParseItemsWithTotal(xml, ParseResItem);
+            all.AddRange(items);
+            if (all.Count >= total || items.Count < batch) break;
+            index += batch;
+        }
+        return all;
+    }
+
+    /// <summary>
+    /// ONID/TSID/SID/EventID を指定して EPG 番組情報テキストを取得する。
+    /// WEBUI と同じ EnumEventInfo?basic=0&amp;id=ONID-TSID-SID-EID を使用。
+    /// レスポンスの event_text / event_ext_text を返す。
+    /// </summary>
+    public async Task<string> GetEventInfoTextAsync(
+        ushort onid, ushort tsid, ushort sid, ushort eid,
+        CancellationToken ct = default)
+    {
+        try
+        {
+            var id  = $"{onid}-{tsid}-{sid}-{eid}";
+            var xml = await _http.GetStringAsync($"{Base}/api/EnumEventInfo?basic=0&id={id}", ct);
+            var doc = XDocument.Parse(xml);
+            // <entry><items><eventinfo>...</eventinfo></items></entry> または
+            // <eventinfo>...</eventinfo> 直接のどちらにも対応
+            var el = doc.Root?.Element("items")?.Elements().FirstOrDefault()
+                  ?? (doc.Root?.Name.LocalName == "eventinfo" ? doc.Root : null);
+            if (el == null) return "";
+
+            var text    = el.Element("event_text")?.Value     ?? "";
+            var extText = el.Element("event_ext_text")?.Value ?? "";
+            return string.IsNullOrEmpty(extText) ? text
+                 : string.IsNullOrEmpty(text)    ? extText
+                 : text + "\n" + extText;
+        }
+        catch { return ""; }
     }
 
     private static ReserveData? ParseResItem(XElement e)
@@ -139,6 +180,8 @@ public class EmwuiClient(string baseUrl)
                                         ? GetUInt(e, "reserveStatus")
                                         : recEnabled ? 0u : 3u,
             };
+
+            // 番組説明は一括取得では含まれないため null のまま（個別取得で取得）
 
             // 録画ファイル名リスト（録画済み予約に存在する場合）
             var fnList = e.Element("recFileNameList");

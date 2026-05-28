@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Windows;
 using System.Windows.Controls;
@@ -100,7 +101,46 @@ public partial class MainWindow : Window
     // 全文検索用キャッシュ: ID → programInfo テキスト
     // _recList と _allRecList は別オブジェクトのため共有辞書で橋渡し。
     // バックグラウンドスレッドと UI スレッドが同時アクセスするため ConcurrentDictionary を使用。
-    private readonly ConcurrentDictionary<uint, string> _programInfoCache = new();
+    // 起動時にディスクから復元し、終了時・取得完了時に保存する。
+    private readonly ConcurrentDictionary<uint, string> _programInfoCache = LoadProgInfoCacheFromDisk();
+
+    private static ConcurrentDictionary<uint, string> LoadProgInfoCacheFromDisk()
+    {
+        try
+        {
+            var path = AppSettings.ProgInfoCachePath;
+            if (File.Exists(path))
+            {
+                var json = File.ReadAllText(path);
+                var dict = JsonSerializer.Deserialize<Dictionary<string, string>>(json);
+                if (dict != null)
+                {
+                    var result = new ConcurrentDictionary<uint, string>();
+                    foreach (var kv in dict)
+                        if (uint.TryParse(kv.Key, out var id))
+                            result[id] = kv.Value ?? "";
+                    return result;
+                }
+            }
+        }
+        catch { }
+        return new ConcurrentDictionary<uint, string>();
+    }
+
+    private void SaveProgInfoCache()
+    {
+        try
+        {
+            var path = AppSettings.ProgInfoCachePath;
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            var dict = new Dictionary<string, string>(_programInfoCache.Count);
+            foreach (var kv in _programInfoCache)
+                dict[kv.Key.ToString()] = kv.Value;
+            var json = JsonSerializer.Serialize(dict);
+            File.WriteAllText(path, json);
+        }
+        catch { }
+    }
 
     private int PageSize => _settings.MaxRecItems;
     private int TotalPages => _recTotal <= 0 ? 1 : (_recTotal + PageSize - 1) / PageSize;
@@ -133,8 +173,7 @@ public partial class MainWindow : Window
         }
 
         if (resetPage) _currentPage = 0;
-        // F5・設定変更時はキャッシュを全クリア。ページ移動時は蓄積したキャッシュを保持する
-        if (resetPage) _programInfoCache.Clear();
+        // キャッシュはリロード時もクリアしない（ディスク永続化のため蓄積し続ける）
 
         // 全件ページモード / ソートをリセット（列ヘッダーのインジケータも消す）
         _isAllRecPagedMode = false;
@@ -346,13 +385,12 @@ public partial class MainWindow : Window
             await sem.WaitAsync(ct);
             try
             {
-                // ContainsKey で確認: 既キャッシュ済みの ID は再フェッチしない
+                // ContainsKey で確認: 既キャッシュ済みの ID は再フェッチしない（空結果も記録して再取得を防ぐ）
                 if (!_programInfoCache.ContainsKey(item.ID) && !ct.IsCancellationRequested)
                 {
                     var text = await client.GetProgramInfoTextAsync(item.ID, ct);
                     item.ProgramInfo = text;
-                    if (!string.IsNullOrEmpty(text))
-                        _programInfoCache[item.ID] = text;
+                    _programInfoCache[item.ID] = text ?? ""; // 空でも ID を記録
                 }
 
                 int n = Interlocked.Increment(ref done);
@@ -389,6 +427,9 @@ public partial class MainWindow : Window
                 else
                     _recView?.Refresh();
             });
+
+        // 取得完了後にキャッシュをディスクへ保存
+        SaveProgInfoCache();
     }
 
     private void UpdatePageControls()
@@ -496,7 +537,8 @@ public partial class MainWindow : Window
         if (TryParseDateFilter(q, out var op, out var date))
             return MatchesDate(data.StartTime, op, date);
         return data.Title.Contains(q, StringComparison.OrdinalIgnoreCase)
-            || data.StationName.Contains(q, StringComparison.OrdinalIgnoreCase);
+            || data.StationName.Contains(q, StringComparison.OrdinalIgnoreCase)
+            || (data.ProgramInfo?.Contains(q, StringComparison.OrdinalIgnoreCase) ?? false);
     }
 
     private static bool MatchesDate(DateTime startTime, string op, DateTime date)
@@ -1063,7 +1105,7 @@ public partial class MainWindow : Window
         PlayButton.Visibility = Visibility.Collapsed;
     }
 
-    private void ReserveList_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    private async void ReserveList_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (ReserveList.SelectedItem is not ReserveData data)
         {
@@ -1075,6 +1117,26 @@ public partial class MainWindow : Window
         ResDateTime.Text = $"{data.StartTime:yyyy/MM/dd HH:mm} ～ {data.EndTimeText} ({data.DurationText})";
         ResStatus.Text = data.StatusText;
         ResComment.Text = data.Comment;
+
+        // 番組情報: null = 未取得 → 個別取得、"" = 取得済みで空 → スキップ
+        if (data.ProgramInfo is null)
+        {
+            var text = "";
+            if (data.EventID != 0)
+            {
+                var client = new EmwuiClient(_settings.EmwuiBaseUrl);
+                text = await client.GetEventInfoTextAsync(
+                    data.OriginalNetworkID, data.TransportStreamID,
+                    data.ServiceID, data.EventID);
+            }
+            data.ProgramInfo = text;
+            if (ReserveList.SelectedItem != data) return;
+        }
+
+        var hasInfo = !string.IsNullOrEmpty(data.ProgramInfo);
+        ResProgramInfo.Text = data.ProgramInfo ?? "";
+        ResProgramInfoLabel.Visibility = hasInfo ? Visibility.Visible : Visibility.Collapsed;
+        ResProgramInfo.Visibility = ResProgramInfoLabel.Visibility;
     }
 
     private void ClearResPanel()
@@ -1084,6 +1146,9 @@ public partial class MainWindow : Window
         ResDateTime.Text = "";
         ResStatus.Text = "";
         ResComment.Text = "";
+        ResProgramInfo.Text = "";
+        ResProgramInfoLabel.Visibility = Visibility.Collapsed;
+        ResProgramInfo.Visibility = Visibility.Collapsed;
     }
 
     private void MainTab_SelectionChanged(object sender, SelectionChangedEventArgs e) { }
@@ -1126,6 +1191,11 @@ public partial class MainWindow : Window
     /// ↑↓は ListView にフォーカスがある場合 ListView 側で処理済み（Handled）のため
     /// ここには届かない。右ペイン等にフォーカスがある場合のみ MoveRecListSelection を呼ぶ。
     /// </summary>
+    private void Window_Closing(object sender, CancelEventArgs e)
+    {
+        SaveProgInfoCache();
+    }
+
     private void Window_KeyDown(object sender, KeyEventArgs e)
     {
         var isEditable = Keyboard.FocusedElement is TextBox tb && !tb.IsReadOnly;
