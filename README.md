@@ -41,6 +41,7 @@
 ## ビルド
 
 ```
-dotnet build -c Release
 dotnet publish -c Release -r win-x64 --self-contained false
 ```
+
+出力先: `publish\`（プロジェクトルート直下、csproj の `<PublishDir>` で固定）

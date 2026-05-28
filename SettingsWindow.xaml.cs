@@ -12,24 +12,25 @@ public partial class SettingsWindow : Window
         InitializeComponent();
         Settings = new AppSettings
         {
-            RecInfoPath = current.RecInfoPath,
-            ReservePath = current.ReservePath,
-            RecordingFolder = current.RecordingFolder,
-            PlayerPath = current.PlayerPath,
-            RefreshIntervalSeconds = current.RefreshIntervalSeconds
+            EmwuiBaseUrl           = current.EmwuiBaseUrl,
+            RecordingFolder        = current.RecordingFolder,
+            PlayerPath             = current.PlayerPath,
+            RefreshIntervalSeconds = current.RefreshIntervalSeconds,
+            PlayServerPort         = current.PlayServerPort,
         };
-        RecInfoPathBox.Text = Settings.RecInfoPath;
-        ReservePathBox.Text = Settings.ReservePath;
-        RecFolderBox.Text = Settings.RecordingFolder;
-        PlayerPathBox.Text = Settings.PlayerPath;
+        EmwuiUrlBox.Text      = Settings.EmwuiBaseUrl;
+        MaxRecItemsBox.Text   = Settings.MaxRecItems.ToString();
+        RecFolderBox.Text     = Settings.RecordingFolder;
+        PlayerPathBox.Text    = Settings.PlayerPath;
     }
 
     private void Save_Click(object sender, RoutedEventArgs e)
     {
-        Settings.RecInfoPath = RecInfoPathBox.Text.Trim();
-        Settings.ReservePath = ReservePathBox.Text.Trim();
+        Settings.EmwuiBaseUrl    = EmwuiUrlBox.Text.Trim();
+        if (int.TryParse(MaxRecItemsBox.Text.Trim(), out var n) && n > 0)
+            Settings.MaxRecItems = n;
         Settings.RecordingFolder = RecFolderBox.Text.Trim();
-        Settings.PlayerPath = PlayerPathBox.Text.Trim();
+        Settings.PlayerPath      = PlayerPathBox.Text.Trim();
         DialogResult = true;
         Close();
     }

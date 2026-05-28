@@ -2,7 +2,9 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="EDCB Viewer" Height="700" Width="1100" MinHeight="500" MinWidth="800"
-        Background="#FF1E1E1E">
+        Background="#FF1E1E1E"
+        PreviewKeyDown="Window_PreviewKeyDown"
+        KeyDown="Window_KeyDown">
     <Window.Resources>
         <Style TargetType="ListView">
             <Setter Property="Background" Value="#FF2D2D2D"/>
@@ -15,6 +17,7 @@
             <Setter Property="Foreground" Value="#FFE0E0E0"/>
             <Setter Property="BorderBrush" Value="#FF555555"/>
             <Setter Property="Padding" Value="8,4"/>
+            <Setter Property="Cursor" Value="Hand"/>
         </Style>
         <Style TargetType="ListViewItem">
             <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
@@ -83,6 +86,43 @@
                 </Trigger>
             </Style.Triggers>
         </Style>
+        <!-- 右ペイン値テキスト（選択可能・読み取り専用）-->
+        <Style x:Key="SelectableValue" TargetType="TextBox">
+            <Setter Property="IsReadOnly"       Value="True"/>
+            <Setter Property="Background"       Value="Transparent"/>
+            <Setter Property="BorderThickness"  Value="0"/>
+            <Setter Property="Foreground"       Value="#FFE0E0E0"/>
+            <Setter Property="FontSize"         Value="13"/>
+            <Setter Property="TextWrapping"     Value="Wrap"/>
+            <Setter Property="Padding"          Value="0"/>
+            <Setter Property="Margin"           Value="0"/>
+            <Setter Property="SelectionBrush"   Value="#FF0078D4"/>
+            <Setter Property="CaretBrush"       Value="Transparent"/>
+            <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+            <Setter Property="Cursor"           Value="IBeam"/>
+            <!-- chrome を完全除去して TextBlock と同じ見た目にする -->
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="TextBox">
+                        <ScrollViewer x:Name="PART_ContentHost" Focusable="False"
+                                      HorizontalScrollBarVisibility="Hidden"
+                                      VerticalScrollBarVisibility="Hidden"
+                                      Padding="0" Margin="0"/>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- 検索ボックス用スタイル -->
+        <Style x:Key="SearchBoxStyle" TargetType="TextBox">
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Foreground" Value="#FFE0E0E0"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="CaretBrush" Value="#FFE0E0E0"/>
+            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+            <Setter Property="SelectionBrush" Value="#FF0078D4"/>
+        </Style>
     </Window.Resources>
 
     <DockPanel>
@@ -91,14 +131,14 @@
             <MenuItem Header="設定" Foreground="#FFE0E0E0">
                 <MenuItem Header="パス設定..." Click="Settings_Click" Foreground="#FF1E1E1E"/>
             </MenuItem>
-            <MenuItem Header="更新" Click="Refresh_Click" Foreground="#FFE0E0E0"/>
+            <MenuItem x:Name="RefreshMenuItem" Header="更新 (F5)" Click="Refresh_Click" Foreground="#FFE0E0E0"/>
         </Menu>
 
         <!-- ステータスバー -->
         <StatusBar DockPanel.Dock="Bottom" Background="#FF2D2D2D">
             <StatusBarItem>
                 <TextBlock x:Name="StatusText" Foreground="#FF888888" FontSize="11"
-                           Text="準備完了"/>
+                           Text=""/>
             </StatusBarItem>
             <StatusBarItem HorizontalAlignment="Right">
                 <TextBlock x:Name="LastUpdateText" Foreground="#FF666666" FontSize="11"/>
@@ -117,47 +157,122 @@
                         <ColumnDefinition Width="1*" MinWidth="250"/>
                     </Grid.ColumnDefinitions>
 
-                    <!-- 録画一覧 -->
-                    <ListView x:Name="RecInfoList" Grid.Column="0"
-                              SelectionChanged="RecInfoList_SelectionChanged"
-                              MouseDoubleClick="RecInfoList_DoubleClick">
-                        <ListView.View>
-                            <GridView>
-                                <GridViewColumn Header="タイトル" Width="300"
-                                    DisplayMemberBinding="{Binding Title}"/>
-                                <GridViewColumn Header="放送局" Width="100"
-                                    DisplayMemberBinding="{Binding ServiceName}"/>
-                                <GridViewColumn Header="開始日時" Width="130">
-                                    <GridViewColumn.CellTemplate>
-                                        <DataTemplate>
-                                            <TextBlock Text="{Binding StartTime, StringFormat='yyyy/MM/dd HH:mm'}"
-                                                       Foreground="#FFE0E0E0"/>
-                                        </DataTemplate>
-                                    </GridViewColumn.CellTemplate>
-                                </GridViewColumn>
-                                <GridViewColumn Header="時間" Width="60"
-                                    DisplayMemberBinding="{Binding DurationText}"/>
-                                <GridViewColumn Header="状態" Width="70">
-                                    <GridViewColumn.CellTemplate>
-                                        <DataTemplate>
-                                            <TextBlock Text="{Binding RecStatusText}">
-                                                <TextBlock.Style>
-                                                    <Style TargetType="TextBlock">
-                                                        <Setter Property="Foreground" Value="#FFE0E0E0"/>
-                                                        <Style.Triggers>
-                                                            <DataTrigger Binding="{Binding HasDrops}" Value="True">
-                                                                <Setter Property="Foreground" Value="#FFFF6B6B"/>
-                                                            </DataTrigger>
-                                                        </Style.Triggers>
-                                                    </Style>
-                                                </TextBlock.Style>
-                                            </TextBlock>
-                                        </DataTemplate>
-                                    </GridViewColumn.CellTemplate>
-                                </GridViewColumn>
-                            </GridView>
-                        </ListView.View>
-                    </ListView>
+                    <!-- 録画一覧 (検索バー + リスト) -->
+                    <Grid Grid.Column="0">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="*"/>
+                        </Grid.RowDefinitions>
+
+                        <!-- 検索バー -->
+                        <Border Grid.Row="0" Background="#FF252525"
+                                BorderBrush="#FF444444" BorderThickness="0,0,0,1"
+                                Padding="8,5">
+                            <DockPanel>
+                                <TextBlock DockPanel.Dock="Left"
+                                           Text="検索:" Foreground="#FF888888"
+                                           FontSize="12" VerticalAlignment="Center"
+                                           Margin="0,0,6,0"/>
+                                <Button DockPanel.Dock="Right" Content="検索"
+                                        Width="52" Padding="4,2" Margin="6,0,0,0"
+                                        Click="RecSearch_Click"/>
+                                <CheckBox x:Name="FullTextCheck"
+                                          DockPanel.Dock="Right"
+                                          Content="番組情報も" Foreground="#FF888888"
+                                          FontSize="11" VerticalAlignment="Center"
+                                          Margin="8,0,0,0"
+                                          IsChecked="True"
+                                          Checked="FullTextCheck_Changed"
+                                          Unchecked="FullTextCheck_Changed"/>
+                                <CheckBox x:Name="RegexCheck"
+                                          DockPanel.Dock="Right"
+                                          Content="正規表現" Foreground="#FF888888"
+                                          FontSize="11" VerticalAlignment="Center"
+                                          Margin="8,0,0,0"
+                                          Checked="RegexCheck_Changed"
+                                          Unchecked="RegexCheck_Changed"/>
+                                <TextBox x:Name="RecSearchBox"
+                                         Style="{StaticResource SearchBoxStyle}"
+                                         TextChanged="RecSearchBox_TextChanged"
+                                         KeyDown="RecSearchBox_KeyDown"/>
+                            </DockPanel>
+                        </Border>
+
+                        <!-- ページナビゲーション -->
+                        <Border Grid.Row="1" Background="#FF222222"
+                                BorderBrush="#FF444444" BorderThickness="0,0,0,1"
+                                Padding="4,3">
+                            <DockPanel>
+                                <Button x:Name="FirstPageButton" DockPanel.Dock="Left"
+                                        Content="⏮" Width="32" Padding="4,2"
+                                        Click="FirstPage_Click" IsEnabled="False"
+                                        Margin="0,0,2,0"/>
+                                <Button x:Name="PrevPageButton" DockPanel.Dock="Left"
+                                        Content="◀ 前" Width="52" Padding="4,2"
+                                        Click="PrevPage_Click" IsEnabled="False"/>
+                                <Button x:Name="LastPageButton" DockPanel.Dock="Right"
+                                        Content="⏭" Width="32" Padding="4,2"
+                                        Click="LastPage_Click" IsEnabled="False"
+                                        Margin="2,0,0,0"/>
+                                <Button x:Name="NextPageButton" DockPanel.Dock="Right"
+                                        Content="次 ▶" Width="52" Padding="4,2"
+                                        Click="NextPage_Click" IsEnabled="False"/>
+                                <StackPanel Orientation="Horizontal"
+                                            HorizontalAlignment="Center"
+                                            VerticalAlignment="Center">
+                                    <TextBlock x:Name="PageLabel"
+                                               Foreground="#FFB0B0B0" FontSize="12"/>
+                                    <TextBlock x:Name="RecCountText"
+                                               Foreground="#FF888888" FontSize="12"
+                                               Margin="16,0,0,0"/>
+                                </StackPanel>
+                            </DockPanel>
+                        </Border>
+
+                        <!-- 録画リスト -->
+                        <ListView x:Name="RecInfoList" Grid.Row="2"
+                                  SelectionChanged="RecInfoList_SelectionChanged"
+                                  MouseDoubleClick="RecInfoList_DoubleClick"
+                                  GridViewColumnHeader.Click="RecInfoList_ColumnHeaderClick">
+                            <ListView.View>
+                                <GridView>
+                                    <GridViewColumn Header="タイトル" Width="300"
+                                        DisplayMemberBinding="{Binding Title}"/>
+                                    <GridViewColumn Header="放送局" Width="100"
+                                        DisplayMemberBinding="{Binding ServiceName}"/>
+                                    <GridViewColumn Header="開始日時" Width="130">
+                                        <GridViewColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <TextBlock Text="{Binding StartTime, StringFormat='yyyy/MM/dd HH:mm'}"
+                                                           Foreground="#FFE0E0E0"/>
+                                            </DataTemplate>
+                                        </GridViewColumn.CellTemplate>
+                                    </GridViewColumn>
+                                    <GridViewColumn Header="時間" Width="60"
+                                        DisplayMemberBinding="{Binding DurationText}"/>
+                                    <GridViewColumn Header="状態" Width="70">
+                                        <GridViewColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <TextBlock Text="{Binding RecStatusText}">
+                                                    <TextBlock.Style>
+                                                        <Style TargetType="TextBlock">
+                                                            <Setter Property="Foreground" Value="#FFE0E0E0"/>
+                                                            <Style.Triggers>
+                                                                <DataTrigger Binding="{Binding HasDrops}" Value="True">
+                                                                    <Setter Property="Foreground" Value="#FFFF6B6B"/>
+                                                                </DataTrigger>
+                                                            </Style.Triggers>
+                                                        </Style>
+                                                    </TextBlock.Style>
+                                                </TextBlock>
+                                            </DataTemplate>
+                                        </GridViewColumn.CellTemplate>
+                                    </GridViewColumn>
+                                </GridView>
+                            </ListView.View>
+                        </ListView>
+                    </Grid>
 
                     <GridSplitter Grid.Column="1" Width="5" HorizontalAlignment="Stretch"
                                   Background="#FF444444"/>
@@ -167,26 +282,28 @@
                                   VerticalScrollBarVisibility="Auto">
                         <StackPanel x:Name="RecInfoPanel" Margin="12">
 
-                            <TextBlock x:Name="RecTitle" TextWrapping="Wrap"
-                                       Foreground="White" FontSize="15" FontWeight="SemiBold"
-                                       Margin="0,0,0,8"/>
+                            <TextBox x:Name="RecTitle" Style="{StaticResource SelectableValue}"
+                                     Foreground="White" FontSize="15" FontWeight="SemiBold"
+                                     Margin="0,0,0,8"/>
 
                             <TextBlock Style="{StaticResource InfoLabel}" Text="放送局"/>
-                            <TextBlock x:Name="RecService" Style="{StaticResource InfoValue}"/>
+                            <TextBox x:Name="RecService" Style="{StaticResource SelectableValue}"/>
 
                             <TextBlock Style="{StaticResource InfoLabel}" Text="放送日時"/>
-                            <TextBlock x:Name="RecDateTime" Style="{StaticResource InfoValue}"/>
+                            <TextBox x:Name="RecDateTime" Style="{StaticResource SelectableValue}"/>
 
                             <TextBlock Style="{StaticResource InfoLabel}" Text="録画ファイル"/>
-                            <TextBlock x:Name="RecFilePath" Style="{StaticResource InfoValue}"
-                                       TextWrapping="Wrap" FontSize="11" Foreground="#FFB0B0B0"/>
+                            <TextBox x:Name="RecFilePath" Style="{StaticResource SelectableValue}"
+                                     FontSize="11" Foreground="#FFB0B0B0"/>
 
                             <TextBlock Style="{StaticResource InfoLabel}" Text="ドロップ / スクランブル"/>
-                            <TextBlock x:Name="RecDrops" Style="{StaticResource InfoValue}"/>
+                            <TextBox x:Name="RecDrops" Style="{StaticResource SelectableValue}"/>
 
-                            <TextBlock Style="{StaticResource InfoLabel}" Text="番組情報"/>
-                            <TextBlock x:Name="RecProgramInfo" Style="{StaticResource InfoValue}"
-                                       FontSize="12"/>
+                            <TextBlock x:Name="RecProgramInfoLabel"
+                                       Style="{StaticResource InfoLabel}" Text="番組情報"
+                                       Visibility="Collapsed"/>
+                            <TextBox x:Name="RecProgramInfo" Style="{StaticResource SelectableValue}"
+                                     FontSize="12" Visibility="Collapsed"/>
 
                             <Button x:Name="PlayButton" Content="MPC-BE で再生"
                                     Margin="0,16,0,0" HorizontalAlignment="Left"
@@ -205,47 +322,71 @@
                         <ColumnDefinition Width="1*" MinWidth="250"/>
                     </Grid.ColumnDefinitions>
 
-                    <!-- 予約一覧 -->
-                    <ListView x:Name="ReserveList" Grid.Column="0"
-                              SelectionChanged="ReserveList_SelectionChanged"
-                              MouseDoubleClick="ReserveList_DoubleClick">
-                        <ListView.View>
-                            <GridView>
-                                <GridViewColumn Header="タイトル" Width="300"
-                                    DisplayMemberBinding="{Binding Title}"/>
-                                <GridViewColumn Header="放送局" Width="100"
-                                    DisplayMemberBinding="{Binding StationName}"/>
-                                <GridViewColumn Header="開始日時" Width="130">
-                                    <GridViewColumn.CellTemplate>
-                                        <DataTemplate>
-                                            <TextBlock Text="{Binding StartTime, StringFormat='yyyy/MM/dd HH:mm'}"
-                                                       Foreground="#FFE0E0E0"/>
-                                        </DataTemplate>
-                                    </GridViewColumn.CellTemplate>
-                                </GridViewColumn>
-                                <GridViewColumn Header="時間" Width="60"
-                                    DisplayMemberBinding="{Binding DurationText}"/>
-                                <GridViewColumn Header="状態" Width="80">
-                                    <GridViewColumn.CellTemplate>
-                                        <DataTemplate>
-                                            <TextBlock Text="{Binding StatusText}">
-                                                <TextBlock.Style>
-                                                    <Style TargetType="TextBlock">
-                                                        <Setter Property="Foreground" Value="#FFE0E0E0"/>
-                                                        <Style.Triggers>
-                                                            <DataTrigger Binding="{Binding IsRecording}" Value="True">
-                                                                <Setter Property="Foreground" Value="#FF6BFF6B"/>
-                                                            </DataTrigger>
-                                                        </Style.Triggers>
-                                                    </Style>
-                                                </TextBlock.Style>
-                                            </TextBlock>
-                                        </DataTemplate>
-                                    </GridViewColumn.CellTemplate>
-                                </GridViewColumn>
-                            </GridView>
-                        </ListView.View>
-                    </ListView>
+                    <!-- 予約一覧 (検索バー + リスト) -->
+                    <Grid Grid.Column="0">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="*"/>
+                        </Grid.RowDefinitions>
+
+                        <!-- 検索バー -->
+                        <Border Grid.Row="0" Background="#FF252525"
+                                BorderBrush="#FF444444" BorderThickness="0,0,0,1"
+                                Padding="8,5">
+                            <DockPanel>
+                                <TextBlock DockPanel.Dock="Left"
+                                           Text="絞込:" Foreground="#FF888888"
+                                           FontSize="12" VerticalAlignment="Center"
+                                           Margin="0,0,6,0"/>
+                                <TextBox x:Name="ResSearchBox"
+                                         Style="{StaticResource SearchBoxStyle}"
+                                         TextChanged="ResSearchBox_TextChanged"/>
+                            </DockPanel>
+                        </Border>
+
+                        <!-- 予約リスト -->
+                        <ListView x:Name="ReserveList" Grid.Row="1"
+                                  SelectionChanged="ReserveList_SelectionChanged"
+                                  MouseDoubleClick="ReserveList_DoubleClick"
+                                  GridViewColumnHeader.Click="ReserveList_ColumnHeaderClick">
+                            <ListView.View>
+                                <GridView>
+                                    <GridViewColumn Header="タイトル" Width="300"
+                                        DisplayMemberBinding="{Binding Title}"/>
+                                    <GridViewColumn Header="放送局" Width="100"
+                                        DisplayMemberBinding="{Binding StationName}"/>
+                                    <GridViewColumn Header="開始日時" Width="130">
+                                        <GridViewColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <TextBlock Text="{Binding StartTime, StringFormat='yyyy/MM/dd HH:mm'}"
+                                                           Foreground="#FFE0E0E0"/>
+                                            </DataTemplate>
+                                        </GridViewColumn.CellTemplate>
+                                    </GridViewColumn>
+                                    <GridViewColumn Header="時間" Width="60"
+                                        DisplayMemberBinding="{Binding DurationText}"/>
+                                    <GridViewColumn Header="状態" Width="80">
+                                        <GridViewColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <TextBlock Text="{Binding StatusText}">
+                                                    <TextBlock.Style>
+                                                        <Style TargetType="TextBlock">
+                                                            <Setter Property="Foreground" Value="#FFE0E0E0"/>
+                                                            <Style.Triggers>
+                                                                <DataTrigger Binding="{Binding IsRecording}" Value="True">
+                                                                    <Setter Property="Foreground" Value="#FF6BFF6B"/>
+                                                                </DataTrigger>
+                                                            </Style.Triggers>
+                                                        </Style>
+                                                    </TextBlock.Style>
+                                                </TextBlock>
+                                            </DataTemplate>
+                                        </GridViewColumn.CellTemplate>
+                                    </GridViewColumn>
+                                </GridView>
+                            </ListView.View>
+                        </ListView>
+                    </Grid>
 
                     <GridSplitter Grid.Column="1" Width="5" HorizontalAlignment="Stretch"
                                   Background="#FF444444"/>
@@ -255,22 +396,22 @@
                                   VerticalScrollBarVisibility="Auto">
                         <StackPanel x:Name="ReservePanel" Margin="12">
 
-                            <TextBlock x:Name="ResTitle" TextWrapping="Wrap"
-                                       Foreground="White" FontSize="15" FontWeight="SemiBold"
-                                       Margin="0,0,0,8"/>
+                            <TextBox x:Name="ResTitle" Style="{StaticResource SelectableValue}"
+                                     Foreground="White" FontSize="15" FontWeight="SemiBold"
+                                     Margin="0,0,0,8"/>
 
                             <TextBlock Style="{StaticResource InfoLabel}" Text="放送局"/>
-                            <TextBlock x:Name="ResStation" Style="{StaticResource InfoValue}"/>
+                            <TextBox x:Name="ResStation" Style="{StaticResource SelectableValue}"/>
 
                             <TextBlock Style="{StaticResource InfoLabel}" Text="放送日時"/>
-                            <TextBlock x:Name="ResDateTime" Style="{StaticResource InfoValue}"/>
+                            <TextBox x:Name="ResDateTime" Style="{StaticResource SelectableValue}"/>
 
                             <TextBlock Style="{StaticResource InfoLabel}" Text="状態"/>
-                            <TextBlock x:Name="ResStatus" Style="{StaticResource InfoValue}"/>
+                            <TextBox x:Name="ResStatus" Style="{StaticResource SelectableValue}"/>
 
                             <TextBlock Style="{StaticResource InfoLabel}" Text="コメント"/>
-                            <TextBlock x:Name="ResComment" Style="{StaticResource InfoValue}"
-                                       FontSize="12"/>
+                            <TextBox x:Name="ResComment" Style="{StaticResource SelectableValue}"
+                                     FontSize="12"/>
                         </StackPanel>
                     </ScrollViewer>
                 </Grid>

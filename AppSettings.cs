@@ -4,15 +4,24 @@ namespace EDCBViewer;
 
 public class AppSettings
 {
-    public string RecInfoPath { get; set; } = @"\\5600x\c\ap\edcb\Setting\RecInfo.txt";
-    public string ReservePath { get; set; } = @"\\5600x\c\ap\edcb\Setting\Reserve.txt";
+    /// <summary>EMWUI の URL。例: http://5600x:5510</summary>
+    public string EmwuiBaseUrl { get; set; } = "";
+
+    /// <summary>録画済み一覧の取得件数上限（新しい順に N 件）。</summary>
+    public int MaxRecItems { get; set; } = 500;
+
+    /// <summary>録画フォルダのパス（追っかけ再生時にファイルを探す）。例: \\5600x\d\PT2</summary>
     public string RecordingFolder { get; set; } = @"\\5600x\d\PT2";
+
     public string PlayerPath { get; set; } = @"C:\ap\MPC-BE.1.8.1.x64\mpc-be64.exe";
     public int RefreshIntervalSeconds { get; set; } = 60;
 
-    // RecInfo.txt のパスはサーバー側のローカルパス (例: D:\PT2\foo.ts)
-    // UNCパスに変換する: "D:\PT2\foo.ts" → "\\5600x\d\PT2\foo.ts"
-    // サーバー名は RecInfoPath の UNC ホスト部分から取得する
+    /// <summary>再生サーバーのポート番号（ブラウザから /play?id=N で MPC-BE 起動）。</summary>
+    public int PlayServerPort { get; set; } = 5580;
+
+    // API が返すファイルパスはサーバー側のローカルパス (例: D:\PT2\foo.ts)
+    // EmwuiBaseUrl のホスト名を使って UNC パスに変換する:
+    //   "D:\PT2\foo.ts" + host "5600x" → "\\5600x\d\PT2\foo.ts"
     public string ToUncPath(string localPath)
     {
         if (string.IsNullOrEmpty(localPath))
@@ -37,22 +46,25 @@ public class AppSettings
         return localPath;
     }
 
-    // RecInfoPath の UNC ホスト名を抽出 (\\5600x\... → "5600x")
+    // EmwuiBaseUrl からホスト名を抽出 ("http://5600x:5510" → "5600x")
     private string UncServer
     {
         get
         {
-            if (RecInfoPath.StartsWith(@"\\"))
+            if (!string.IsNullOrWhiteSpace(EmwuiBaseUrl))
             {
-                var parts = RecInfoPath.TrimStart('\\').Split('\\');
-                if (parts.Length > 0) return parts[0];
+                try { return new Uri(EmwuiBaseUrl).Host; }
+                catch { }
             }
             return "";
         }
     }
 
     private static readonly string SettingsPath =
-        Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "settings.json");
+        Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "EDCBViewer",
+            "settings.json");
 
     public static AppSettings Load()
     {
@@ -70,6 +82,7 @@ public class AppSettings
 
     public void Save()
     {
+        Directory.CreateDirectory(Path.GetDirectoryName(SettingsPath)!);
         var json = JsonSerializer.Serialize(this, new JsonSerializerOptions { WriteIndented = true });
         File.WriteAllText(SettingsPath, json);
     }

@@ -1,7 +1,7 @@
 <Window x:Class="EDCBViewer.SettingsWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="設定" Height="360" Width="560"
+        Title="設定" Height="370" Width="560"
         WindowStartupLocation="CenterOwner" ResizeMode="NoResize"
         Background="#FF1E1E1E">
     <Window.Resources>
@@ -24,6 +24,10 @@
             <Setter Property="Padding" Value="10,4"/>
             <Setter Property="Cursor" Value="Hand"/>
         </Style>
+        <Style TargetType="Separator">
+            <Setter Property="Background" Value="#FF444444"/>
+            <Setter Property="Margin" Value="0,8,0,4"/>
+        </Style>
     </Window.Resources>
 
     <DockPanel Margin="16">
@@ -45,19 +49,27 @@
                 <RowDefinition Height="Auto"/>
                 <RowDefinition Height="Auto"/>
                 <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
             </Grid.RowDefinitions>
 
-            <Label Grid.Row="0" Content="RecInfo.txt のパス"/>
-            <TextBox x:Name="RecInfoPathBox" Grid.Row="1"/>
+            <!-- EMWUI URL -->
+            <Label Grid.Row="0" Content="EMWUI URL　例: http://5600x:5510"
+                   Foreground="#FF6BC5FF"/>
+            <TextBox x:Name="EmwuiUrlBox" Grid.Row="1"/>
 
-            <Label Grid.Row="2" Content="Reserve.txt のパス"/>
-            <TextBox x:Name="ReservePathBox" Grid.Row="3"/>
+            <!-- 取得件数 -->
+            <Label Grid.Row="2" Content="録画済み取得件数（新しい順に N 件）"/>
+            <TextBox x:Name="MaxRecItemsBox" Grid.Row="3"/>
 
-            <Label Grid.Row="4" Content="録画フォルダのパス"/>
-            <TextBox x:Name="RecFolderBox" Grid.Row="5"/>
+            <Separator Grid.Row="4"/>
 
-            <Label Grid.Row="6" Content="MPC-BE の実行ファイルパス"/>
-            <DockPanel Grid.Row="7">
+            <!-- 録画フォルダ（追っかけ再生用） -->
+            <Label Grid.Row="5" Content="録画フォルダのパス（追っかけ再生用）　例: \\5600x\d\PT2"/>
+            <TextBox x:Name="RecFolderBox" Grid.Row="6"/>
+
+            <!-- MPC-BE -->
+            <Label Grid.Row="7" Content="MPC-BE の実行ファイルパス"/>
+            <DockPanel Grid.Row="8">
                 <Button DockPanel.Dock="Right" Content="参照..." Width="60"
                         Margin="6,0,0,0" Click="Browse_Click"/>
                 <TextBox x:Name="PlayerPathBox"/>
