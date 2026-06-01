@@ -13,7 +13,7 @@ EDCB（EpgTimerSrv）と連携する Windows WPF アプリケーション。
 |---|---|
 | 場所 | `C:\work\CC\EDCBViewer` |
 | フレームワーク | .NET 9.0 / WPF / Windows |
-| 依存パッケージ | Microsoft.Data.Sqlite 9.0.0 |
+| 依存パッケージ | Npgsql 9.0.3 |
 | ビルド | `dotnet build -c Release`（`dotnet publish` は使わない、`-c Release` 必須） |
 
 ---
@@ -55,7 +55,7 @@ EDCBViewer/
 | RefreshIntervalSeconds | 自動更新間隔（現在は手動更新のみ） | 60 |
 | PlayServerPort | 再生サーバーポート | 5580 |
 | EncodedFolder | エンコード済みフォルダ（ディレクトリタブ） | `""` |
-| EpgDataFolder | EDCB の EpgData フォルダ（*_epg.dat の場所） | `""` |
+| DbConnectionString | PostgreSQL 接続文字列（録画サーバー上のDB） | `""` |
 
 設定ファイルパス: `%LOCALAPPDATA%\EDCBViewer\settings.json`
 
@@ -102,17 +102,20 @@ EpgData.db の events テーブルを ONID/TSID/SID/EventID で検索
 
 ## SQLiteデータベース
 
-### 録画インデックスDB
-- パス: `%LOCALAPPDATA%\EDCBViewer\recording_index.db`
-- 管理クラス: `Services/RecordingIndex.cs`
-- テーブル: `recordings`（録画済みファイルのメタデータを蓄積）
-- `start_time_epg` など後付けカラムは空文字列になりうるため `ReadEntry` で `ParseDt()` により `default` にフォールバック
+### PostgreSQL DB（録画サーバー上）
+- 接続: `DbConnectionString` 設定（例: `Host=5600x;Database=edcbviewer;Username=edcb;Password=pass`）
+- **recordings テーブル** — 管理クラス: `Services/RecordingIndex.cs`、EDCBViewer が read/write
+- **events テーブル** — 管理クラス: `Services/EpgDbReader.cs`、EDCBViewer は read-only
+  - EpgTimerSrv 側（EpgSqliteExporter）が PostgreSQL に書き出す必要あり（別途対応）
 
-### EPG DB（連携予定）
-- パス: EpgTimerSrv の `{SettingPath}\EpgData.db`
-- EpgTimerSrv が書き出す（詳細は EpgSqliteExporter_Spec.md 参照）
-- EDCBViewer は読み取り専用で参照
-- テーブル: services / events / event_genres / event_audio / event_groups
+#### recordings テーブル主要カラム
+| カラム | 型 | 説明 |
+|---|---|---|
+| file_name | TEXT PK | ファイル名（拡張子なし） |
+| full_title / series_title / episode_number | TEXT / INTEGER | タイトル情報 |
+| start_time / start_time_epg / duration_second | TEXT / BIGINT | 放送日時・時間 |
+| onid / tsid / sid / event_id | BIGINT | EPG識別子 |
+| program_info / drops / scrambles | TEXT / BIGINT | 番組情報・録画品質 |
 
 ---
 
