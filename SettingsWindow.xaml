@@ -1,7 +1,7 @@
 <Window x:Class="EDCBViewer.SettingsWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="設定" Height="370" Width="560"
+        Title="設定" Height="620" Width="560"
         WindowStartupLocation="CenterOwner" ResizeMode="NoResize"
         Background="#FF1E1E1E">
     <Window.Resources>
@@ -50,6 +50,14 @@
                 <RowDefinition Height="Auto"/>
                 <RowDefinition Height="Auto"/>
                 <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
             </Grid.RowDefinitions>
 
             <!-- EMWUI URL -->
@@ -73,6 +81,37 @@
                 <Button DockPanel.Dock="Right" Content="参照..." Width="60"
                         Margin="6,0,0,0" Click="Browse_Click"/>
                 <TextBox x:Name="PlayerPathBox"/>
+            </DockPanel>
+
+            <Separator Grid.Row="9"/>
+
+            <!-- エンコード済みフォルダ -->
+            <Label Grid.Row="10" Content="エンコード済みフォルダのパス（ディレクトリタブで .mp4 を一覧表示）"/>
+            <DockPanel Grid.Row="11">
+                <Button DockPanel.Dock="Right" Content="参照..." Width="60"
+                        Margin="6,0,0,0" Click="BrowseFolder_Click"/>
+                <TextBox x:Name="EncodedFolderBox"/>
+            </DockPanel>
+
+            <Separator Grid.Row="12"/>
+
+            <!-- EPGデータフォルダ -->
+            <Label Grid.Row="12" Content="EPGデータフォルダのパス（例: \\5600x\c\ap\edcb\Setting\EpgData）"/>
+            <DockPanel Grid.Row="13">
+                <Button DockPanel.Dock="Right" Content="参照..." Width="60"
+                        Margin="6,0,0,0" Click="BrowseEpgFolder_Click"/>
+                <TextBox x:Name="EpgDataFolderBox"/>
+            </DockPanel>
+
+            <Separator Grid.Row="14"/>
+
+            <!-- EpgData.db パス -->
+            <Label Grid.Row="15" Content="EpgData.db のパス（例: \\5600x\c\ap\edcb\Setting\EpgData.db）"
+                   Foreground="#FF6BC5FF"/>
+            <DockPanel Grid.Row="16">
+                <Button DockPanel.Dock="Right" Content="参照..." Width="60"
+                        Margin="6,0,0,0" Click="BrowseEpgDb_Click"/>
+                <TextBox x:Name="EpgDbPathBox"/>
             </DockPanel>
         </Grid>
     </DockPanel>

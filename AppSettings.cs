@@ -19,6 +19,15 @@ public class AppSettings
     /// <summary>再生サーバーのポート番号（ブラウザから /play?id=N で MPC-BE 起動）。</summary>
     public int PlayServerPort { get; set; } = 5580;
 
+    /// <summary>エンコード済みフォルダのパス（ディレクトリタブで .mp4 を一覧表示）。</summary>
+    public string EncodedFolder { get; set; } = "";
+
+    /// <summary>EDCBのEPGデータフォルダ（*_epg.dat が置かれている場所）。</summary>
+    public string EpgDataFolder { get; set; } = "";
+
+    /// <summary>EpgData.db のフルパス（例: \\5600x\c\ap\edcb\Setting\EpgData.db）</summary>
+    public string EpgDbPath { get; set; } = "";
+
     // API が返すファイルパスはサーバー側のローカルパス (例: D:\PT2\foo.ts)
     // EmwuiBaseUrl のホスト名を使って UNC パスに変換する:
     //   "D:\PT2\foo.ts" + host "5600x" → "\\5600x\d\PT2\foo.ts"
@@ -71,6 +80,12 @@ public class AppSettings
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "EDCBViewer",
             "proginfo_cache.json");
+
+    public static string RecordingIndexPath =>
+        Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "EDCBViewer",
+            "recording_index.db");
 
     public static AppSettings Load()
     {

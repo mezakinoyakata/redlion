@@ -10,6 +10,7 @@ using System.Windows.Input;
 using EDCBViewer.Models;
 using EDCBViewer.Parsers;
 using EDCBViewer.Services;
+using RecordingIndexService = EDCBViewer.Services.RecordingIndex;
 
 namespace EDCBViewer;
 
@@ -22,9 +23,27 @@ public partial class MainWindow : Window
     private List<RecFileInfo> _allRecList = []; // 検索用全件（バックグラウンド取得）
     private List<ReserveData> _resList = [];
 
+    private readonly RecordingIndexService _recordingIndex = new(AppSettings.RecordingIndexPath);
+    private List<MediaFile> _mediaFiles = [];
+    private MediaFile? _selectedMediaFile;
+    private int _dirCurrentPage = 0;
+    private int DirPageSize => _settings.MaxRecItems;
+    private int DirTotalPages(int filteredCount) => Math.Max(1, (filteredCount + DirPageSize - 1) / DirPageSize);
+
+    private string? _dirSortProp;
+    private bool    _dirSortAsc = true;
+    private GridViewColumn? _dirActiveSortCol;
+    private readonly Dictionary<GridViewColumn, string> _dirOrigHeaders = new();
+
+    private static readonly Dictionary<string, string> DirSortProps = new()
+    {
+        ["ファイル名"] = "ParsedTitle",
+        ["放送局"]     = "ParsedStation",
+        ["放送日時"]   = "ParsedStartTime",
+    };
+
     // フィルタ + ソート用 CollectionView
     private ICollectionView? _recView;    // ページビュー
-    private ICollectionView? _resView;
 
     // ソート状態
     private string? _recSortProp;
@@ -74,6 +93,7 @@ public partial class MainWindow : Window
         InitializeComponent();
         InitSortHeaders();
         StartPlayServer();
+        _recordingIndex.Load();
         // 自動リロードは重いため無効化。手動更新（メニュー「更新」）のみ。
         Loaded += (_, _) => Reload();
         Closed += (_, _) => _playServer?.Stop();
@@ -89,6 +109,10 @@ public partial class MainWindow : Window
         if (ReserveList.View is GridView resGv)
             foreach (var col in resGv.Columns)
                 _resOrigHeaders[col] = col.Header?.ToString() ?? "";
+
+        if (DirList.View is GridView dirGv)
+            foreach (var col in dirGv.Columns)
+                _dirOrigHeaders[col] = col.Header?.ToString() ?? "";
     }
 
     private bool _isLoading;
@@ -232,15 +256,10 @@ public partial class MainWindow : Window
         RecInfoList.ItemsSource = recView;
         _recView = recView;
 
-        // 予約リストを ICollectionView でラップ
+        // 予約リスト
         _resList = resList;
-        var resView = CollectionViewSource.GetDefaultView(_resList);
-        resView.Filter = ResFilter;
-        if (_resSortProp != null)
-            resView.SortDescriptions.Add(new SortDescription(_resSortProp,
-                _resSortAsc ? ListSortDirection.Ascending : ListSortDirection.Descending));
-        ReserveList.ItemsSource = resView;
-        _resView = resView;
+        _resCurrentPage = 0;
+        ShowResPage();
 
         // 選択を復元（ItemsSource 差し替えで消えるため）
         // 録画済み: 同一 ID が新ページにあれば復元、なければ先頭を選択してフォーカス
@@ -272,6 +291,14 @@ public partial class MainWindow : Window
 
         if (recErr == null)
         {
+            // インデックスに基本情報を登録（番組情報はバックグラウンドで後から補完）
+            foreach (var rec in recList)
+            {
+                _programInfoCache.TryGetValue(rec.ID, out var cached);
+                _recordingIndex.AddOrUpdate(rec, cached ?? rec.ProgramInfo);
+            }
+            _recordingIndex.Save();
+
             // ① 現ページの番組情報をバックグラウンドで取得（全文検索・右ペインキャッシュ用）
             _bgCts.Cancel();
             _bgCts = new CancellationTokenSource();
@@ -335,16 +362,24 @@ public partial class MainWindow : Window
         {
             // 新しい順（items はソート済み）に逐次取得。番組情報なし → 以降中断。
             int seqDone = 0;
+            var seqEpgDb = new EpgDbReader(_settings.EpgDbPath);
             foreach (var item in items)
             {
                 if (ct.IsCancellationRequested) break;
                 if (_programInfoCache.ContainsKey(item.ID)) continue;
                 try
                 {
-                    var text = await client.GetProgramInfoTextAsync(item.ID, ct);
-                    if (string.IsNullOrEmpty(text)) break; // 番組情報なし → 中断
+                    string? text = null;
+                    if (item.EventID != 0)
+                        text = seqEpgDb.GetEventInfoText(item.OriginalNetworkID, item.TransportStreamID, item.ServiceID, item.EventID);
+                    if (string.IsNullOrEmpty(text))
+                    {
+                        text = await client.GetProgramInfoTextAsync(item.ID, ct);
+                        if (string.IsNullOrEmpty(text)) break; // 番組情報なし → 中断
+                    }
                     item.ProgramInfo = text;
                     _programInfoCache[item.ID] = text;
+                    _recordingIndex.AddOrUpdate(item, text);
                     seqDone++;
                     if (seqDone % 10 == 0)
                     {
@@ -379,6 +414,7 @@ public partial class MainWindow : Window
         var sem = new SemaphoreSlim(concurrency);
         int done = 0;
         int total = items.Count;
+        var epgDb = new EpgDbReader(_settings.EpgDbPath);
 
         var tasks = items.Select(async item =>
         {
@@ -388,9 +424,15 @@ public partial class MainWindow : Window
                 // ContainsKey で確認: 既キャッシュ済みの ID は再フェッチしない（空結果も記録して再取得を防ぐ）
                 if (!_programInfoCache.ContainsKey(item.ID) && !ct.IsCancellationRequested)
                 {
-                    var text = await client.GetProgramInfoTextAsync(item.ID, ct);
-                    item.ProgramInfo = text;
+                    string? text = null;
+                    if (item.EventID != 0)
+                        text = epgDb.GetEventInfoText(item.OriginalNetworkID, item.TransportStreamID, item.ServiceID, item.EventID);
+                    if (string.IsNullOrEmpty(text))
+                        text = await client.GetProgramInfoTextAsync(item.ID, ct);
+                    item.ProgramInfo = text ?? "";
                     _programInfoCache[item.ID] = text ?? ""; // 空でも ID を記録
+                    if (!string.IsNullOrEmpty(text))
+                        _recordingIndex.AddOrUpdate(item, text);
                 }
 
                 int n = Interlocked.Increment(ref done);
@@ -428,8 +470,9 @@ public partial class MainWindow : Window
                     _recView?.Refresh();
             });
 
-        // 取得完了後にキャッシュをディスクへ保存
+        // 取得完了後にキャッシュとインデックスをディスクへ保存
         SaveProgInfoCache();
+        _recordingIndex.Save();
     }
 
     private void UpdatePageControls()
@@ -606,7 +649,17 @@ public partial class MainWindow : Window
 
     private void RecSearchBox_KeyDown(object sender, KeyEventArgs e)
     {
-        if (e.Key == Key.Enter) ApplySearchMode();
+        if (e.Key != Key.Enter) return;
+        e.Handled = true;
+        ApplySearchMode();
+        FocusListFirst(RecInfoList);
+    }
+
+    private static void FocusListFirst(ListView list)
+    {
+        if (list.Items.Count > 0)
+            list.SelectedIndex = 0;
+        list.Focus();
     }
 
     // TextChanged はクリア時（空になった瞬間）のみページビューへ戻す
@@ -666,7 +719,20 @@ public partial class MainWindow : Window
 
     private void ResSearchBox_TextChanged(object sender, TextChangedEventArgs e)
     {
-        _resView?.Refresh();
+        if (string.IsNullOrEmpty(ResSearchBox.Text))
+        {
+            _resCurrentPage = 0;
+            ShowResPage();
+        }
+    }
+
+    private void ResSearchBox_KeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key != Key.Enter) return;
+        e.Handled = true;
+        _resCurrentPage = 0;
+        ShowResPage();
+        FocusListFirst(ReserveList);
     }
 
     // ─── 列ヘッダークリック（ソート）────────────────────────────────────────
@@ -877,7 +943,9 @@ public partial class MainWindow : Window
         if (!ResSortProps.TryGetValue(origText, out var prop)) return;
 
         ApplySort(col, prop, ref _resActiveSortCol, ref _resSortProp, ref _resSortAsc,
-                  _resOrigHeaders, _resView);
+                  _resOrigHeaders, null);
+        _resCurrentPage = 0;
+        ShowResPage();
     }
 
     /// <summary>
@@ -940,8 +1008,7 @@ public partial class MainWindow : Window
         RecDrops.Text    = $"ドロップ: {info.Drops}  スクランブル: {info.Scrambles}{errSuffix}";
         PlayButton.Visibility = Visibility.Visible;
 
-        // ── 番組情報: キャッシュ済みなら即表示、なければ EnumRecInfo?id=N を取得 ──
-        // _programInfoCache を先に確認（バックグラウンドフェッチ済みかもしれない）
+        // ── 番組情報: キャッシュ済みなら即表示、なければ EpgData.db → EMWUI の順で取得 ──
         if (_programInfoCache.TryGetValue(info.ID, out var cached) && !string.IsNullOrEmpty(cached))
         {
             ShowProgramInfo(cached);
@@ -949,14 +1016,28 @@ public partial class MainWindow : Window
         }
         if (!string.IsNullOrEmpty(info.ProgramInfo))
         {
-            // info オブジェクト自体にセット済み（2回目クリック等）→ 即時表示
             ShowProgramInfo(info.ProgramInfo);
             return;
         }
 
+        // EpgData.db から取得
+        if (info.EventID != 0)
+        {
+            var epgText = new EpgDbReader(_settings.EpgDbPath).GetEventInfoText(
+                info.OriginalNetworkID, info.TransportStreamID, info.ServiceID, info.EventID);
+            if (!string.IsNullOrEmpty(epgText))
+            {
+                info.ProgramInfo = epgText;
+                _programInfoCache[info.ID] = epgText;
+                _recordingIndex.AddOrUpdate(info, epgText);
+                ShowProgramInfo(epgText);
+                return;
+            }
+        }
+
         if (string.IsNullOrWhiteSpace(_settings.EmwuiBaseUrl)) return;
 
-        // "取得中..." を出しておいてから非同期フェッチ
+        // EMWUI フォールバック（EpgData.db にない古い録画など）
         RecProgramInfoLabel.Visibility = Visibility.Visible;
         RecProgramInfo.Visibility      = Visibility.Visible;
         RecProgramInfo.Text            = "番組情報取得中...";
@@ -964,10 +1045,8 @@ public partial class MainWindow : Window
         var progText = await new EmwuiClient(_settings.EmwuiBaseUrl)
             .GetProgramInfoTextAsync(info.ID, ct);
 
-        if (ct.IsCancellationRequested) return;   // 別の行が選ばれた
+        if (ct.IsCancellationRequested) return;
 
-        // RecFileInfo に書き戻してキャッシュ（次回クリック時は HTTP 不要）
-        // _programInfoCache にも登録して全文検索でも使えるようにする
         info.ProgramInfo = progText;
         if (!string.IsNullOrEmpty(progText))
             _programInfoCache[info.ID] = progText;
@@ -1124,10 +1203,18 @@ public partial class MainWindow : Window
             var text = "";
             if (data.EventID != 0)
             {
-                var client = new EmwuiClient(_settings.EmwuiBaseUrl);
-                text = await client.GetEventInfoTextAsync(
+                // EpgData.db から取得
+                text = new EpgDbReader(_settings.EpgDbPath).GetEventInfoText(
                     data.OriginalNetworkID, data.TransportStreamID,
-                    data.ServiceID, data.EventID);
+                    data.ServiceID, data.EventID) ?? "";
+
+                // EMWUI フォールバック
+                if (string.IsNullOrEmpty(text) && !string.IsNullOrWhiteSpace(_settings.EmwuiBaseUrl))
+                {
+                    text = await new EmwuiClient(_settings.EmwuiBaseUrl).GetEventInfoTextAsync(
+                        data.OriginalNetworkID, data.TransportStreamID,
+                        data.ServiceID, data.EventID);
+                }
             }
             data.ProgramInfo = text;
             if (ReserveList.SelectedItem != data) return;
@@ -1151,7 +1238,321 @@ public partial class MainWindow : Window
         ResProgramInfo.Visibility = Visibility.Collapsed;
     }
 
-    private void MainTab_SelectionChanged(object sender, SelectionChangedEventArgs e) { }
+    private void MainTab_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (!ReferenceEquals(e.OriginalSource, MainTab)) return;
+        if (MainTab.SelectedItem is TabItem { Header: "ディレクトリ" })
+        {
+            var root = _settings.EncodedFolder;
+            var rootNorm = root.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            if (_dirRoot != rootNorm || string.IsNullOrEmpty(_currentDirPath))
+            {
+                _dirRoot = rootNorm;
+                _currentDirPath = rootNorm;
+            }
+            LoadMediaFiles();
+        }
+    }
+
+    // ─── ディレクトリタブ ─────────────────────────────────────────────────────
+
+    private bool _dirLoading = false;
+    private string _dirRoot = "";
+    private string _currentDirPath = "";
+
+    private void NavigateDir(string path)
+    {
+        _currentDirPath = path;
+        DirSearchBox.Text = "";
+        _dirCurrentPage = 0;
+        LoadMediaFiles();
+    }
+
+    private async void LoadMediaFiles()
+    {
+        if (_dirLoading) return;
+        _dirLoading = true;
+        try
+        {
+            await LoadMediaFilesCore();
+        }
+        finally
+        {
+            _dirLoading = false;
+        }
+    }
+
+    private async Task LoadMediaFilesCore()
+    {
+        var folder = _currentDirPath;
+        if (string.IsNullOrWhiteSpace(folder))
+        {
+            _mediaFiles = [];
+            DirList.ItemsSource = null;
+            StatusText.Text = "エンコード済みフォルダが未設定です。設定 → パス設定... で指定してください。";
+            DirPathBox.Text = "";
+            return;
+        }
+
+        _mediaFiles = [];
+        DirList.ItemsSource = null;
+        StatusText.Text = "ファイル一覧を読み込み中...";
+
+        List<MediaFile> all;
+        try
+        {
+            all = await Task.Run(() =>
+            {
+                if (!Directory.Exists(folder)) return [];
+
+                var dirs = new DirectoryInfo(folder)
+                    .EnumerateDirectories()
+                    .Select(di => new MediaFile
+                    {
+                        FilePath = di.FullName,
+                        IsDirectory = true,
+                        LastModified = di.LastWriteTime,
+                    })
+                    .OrderBy(d => d.DisplayName)
+                    .ToList();
+
+                var files = new DirectoryInfo(folder)
+                    .EnumerateFiles("*.mp4")
+                    .Select(fi => new MediaFile
+                    {
+                        FilePath = fi.FullName,
+                        FileSize = fi.Length,
+                        LastModified = fi.LastWriteTime,
+                    })
+                    .OrderByDescending(f => f.ParsedStartTime ?? f.LastModified)
+                    .ToList();
+
+                return dirs.Concat(files).ToList();
+            });
+        }
+        catch (Exception ex)
+        {
+            StatusText.Text = $"読み込みエラー: {ex.Message}";
+            return;
+        }
+
+        _mediaFiles = all;
+        _dirCurrentPage = 0;
+        UpdateDirAddressBar();
+        ShowDirPage();
+        DirList.Focus();
+    }
+
+    private void UpdateDirAddressBar()
+    {
+        DirPathBox.Text = _currentDirPath;
+        DirPathBox.CaretIndex = DirPathBox.Text.Length;
+    }
+
+    private void DirPathBox_KeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key != Key.Enter) return;
+        e.Handled = true;
+        var path = DirPathBox.Text.Trim().TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        if (string.IsNullOrEmpty(path) || !Directory.Exists(path))
+        {
+            DirPathBox.Text = _currentDirPath;
+            StatusText.Text = $"フォルダが見つかりません: {DirPathBox.Text.Trim()}";
+            return;
+        }
+        if (!path.StartsWith(_dirRoot, StringComparison.OrdinalIgnoreCase))
+            _dirRoot = path;
+        NavigateDir(path);
+    }
+
+    private List<MediaFile> GetFilteredFiles()
+    {
+        var dirs = _mediaFiles.Where(f => f.IsDirectory).OrderBy(d => d.DisplayName);
+        IEnumerable<MediaFile> files = _mediaFiles.Where(f => !f.IsDirectory);
+
+        var q = DirSearchBox.Text.Trim();
+        if (!string.IsNullOrEmpty(q))
+            files = files.Where(f =>
+                f.ParsedTitle.Contains(q, StringComparison.OrdinalIgnoreCase) ||
+                f.ParsedStation.Contains(q, StringComparison.OrdinalIgnoreCase));
+
+        if (_dirSortProp != null)
+        {
+            var asc = _dirSortAsc;
+            Comparison<MediaFile> cmp = _dirSortProp switch
+            {
+                "ParsedTitle"     => (a, b) => string.Compare(a.ParsedTitle,   b.ParsedTitle,   StringComparison.CurrentCulture),
+                "ParsedStation"   => (a, b) => string.Compare(a.ParsedStation, b.ParsedStation, StringComparison.CurrentCulture),
+                "ParsedStartTime" => (a, b) => (a.ParsedStartTime ?? DateTime.MinValue).CompareTo(b.ParsedStartTime ?? DateTime.MinValue),
+                _                 => (a, b) => (a.ParsedStartTime ?? a.LastModified).CompareTo(b.ParsedStartTime ?? b.LastModified),
+            };
+            var fileList = files.ToList();
+            fileList.Sort(asc ? cmp : (a, b) => -cmp(a, b));
+            return dirs.Concat(fileList).ToList();
+        }
+
+        return dirs.Concat(files).ToList();
+    }
+
+    private void DirList_ColumnHeaderClick(object sender, RoutedEventArgs e)
+    {
+        if (e.OriginalSource is not GridViewColumnHeader header || header.Column == null) return;
+        var col = header.Column;
+        var origText = _dirOrigHeaders.TryGetValue(col, out var t) ? t : col.Header?.ToString() ?? "";
+        if (!DirSortProps.TryGetValue(origText, out var prop)) return;
+
+        ApplySort(col, prop, ref _dirActiveSortCol, ref _dirSortProp, ref _dirSortAsc,
+                  _dirOrigHeaders, null);
+        _dirCurrentPage = 0;
+        ShowDirPage();
+    }
+
+    private void ShowDirPage()
+    {
+        var filtered = GetFilteredFiles();
+        var total = filtered.Count;
+        var totalPages = DirTotalPages(total);
+        _dirCurrentPage = Math.Clamp(_dirCurrentPage, 0, totalPages - 1);
+
+        DirList.ItemsSource = filtered
+            .Skip(_dirCurrentPage * DirPageSize)
+            .Take(DirPageSize)
+            .ToList();
+
+        var hasPrev = _dirCurrentPage > 0;
+        var hasNext = _dirCurrentPage < totalPages - 1;
+        DirFirstPageButton.IsEnabled = hasPrev;
+        DirPrevPageButton.IsEnabled  = hasPrev;
+        DirNextPageButton.IsEnabled  = hasNext;
+        DirLastPageButton.IsEnabled  = hasNext;
+        DirPageLabel.Text  = totalPages > 1 ? $"{_dirCurrentPage + 1} / {totalPages} ページ" : "";
+        DirCountText.Text  = $"{total:#,0} 件";
+
+        StatusText.Text = total > 0
+            ? $"{total:#,0} 件のファイルが見つかりました"
+            : "一致するファイルがありません";
+    }
+
+    private void DirFirstPage_Click(object sender, RoutedEventArgs e) { _dirCurrentPage = 0; ShowDirPage(); }
+    private void DirPrevPage_Click(object sender, RoutedEventArgs e)  { _dirCurrentPage--; ShowDirPage(); }
+    private void DirNextPage_Click(object sender, RoutedEventArgs e)  { _dirCurrentPage++; ShowDirPage(); }
+    private void DirLastPage_Click(object sender, RoutedEventArgs e)  { _dirCurrentPage = int.MaxValue; ShowDirPage(); }
+
+    private void DirSearchBox_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        if (string.IsNullOrEmpty(DirSearchBox.Text))
+        {
+            _dirCurrentPage = 0;
+            ShowDirPage();
+        }
+    }
+
+    private void DirSearchBox_KeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key != Key.Enter) return;
+        e.Handled = true;
+        _dirCurrentPage = 0;
+        ShowDirPage();
+        FocusListFirst(DirList);
+    }
+
+    private void DirRefresh_Click(object sender, RoutedEventArgs e) => LoadMediaFiles();
+
+    private void DirList_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (DirList.SelectedItem is not MediaFile file)
+        {
+            ClearDirPanel();
+            return;
+        }
+
+        _selectedMediaFile = file;
+        DirFilePath.Text = file.FilePath;
+
+        if (file.IsDirectory)
+        {
+            DirTitle.Text = Path.GetFileName(file.FilePath);
+            DirService.Text = "";
+            DirDateTime.Text = "";
+            DirDrops.Text = "";
+            DirProgramInfoLabel.Visibility = Visibility.Collapsed;
+            DirProgramInfo.Visibility = Visibility.Collapsed;
+            DirPlayButton.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        DirPlayButton.Visibility = Visibility.Visible;
+
+        // パース済みタイトル（局名・日時を除いた部分）でインデックス検索
+        var entry = _recordingIndex.Find(file.FileName);
+
+        if (entry == null)
+        {
+            DirTitle.Text = file.ParsedTitle;
+            DirService.Text = file.ParsedStation;
+            DirDateTime.Text = file.ParsedStartTimeText;
+            DirDrops.Text = "";
+            DirProgramInfoLabel.Visibility = Visibility.Collapsed;
+            DirProgramInfo.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        DirTitle.Text = entry.FullTitle;
+        DirService.Text = entry.ServiceName;
+        DirDateTime.Text = $"{entry.StartTime:yyyy/MM/dd HH:mm} ({entry.DurationText})";
+        var errSuffix = string.IsNullOrWhiteSpace(entry.Comment) ? "" : $"  [{entry.Comment.Trim()}]";
+        DirDrops.Text = $"ドロップ: {entry.Drops}  スクランブル: {entry.Scrambles}{errSuffix}";
+
+        var hasInfo = !string.IsNullOrEmpty(entry.ProgramInfo);
+        DirProgramInfoLabel.Visibility = hasInfo ? Visibility.Visible : Visibility.Collapsed;
+        DirProgramInfo.Visibility = DirProgramInfoLabel.Visibility;
+        DirProgramInfo.Text = entry.ProgramInfo;
+    }
+
+    private void DirList_DoubleClick(object sender, MouseButtonEventArgs e)
+    {
+        if (DirList.SelectedItem is MediaFile file)
+        {
+            if (file.IsDirectory) NavigateDir(file.FilePath);
+            else OpenWithPlayer(file.FilePath);
+        }
+    }
+
+    private void DirBrowse_Click(object sender, RoutedEventArgs e)
+    {
+        var dialog = new Microsoft.Win32.OpenFolderDialog
+        {
+            Title = "フォルダを選択",
+            InitialDirectory = string.IsNullOrEmpty(_currentDirPath) ? _dirRoot : _currentDirPath,
+        };
+        if (dialog.ShowDialog() != true) return;
+        var selected = dialog.FolderName;
+        if (!selected.StartsWith(_dirRoot, StringComparison.OrdinalIgnoreCase))
+        {
+            _dirRoot = selected.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        }
+        NavigateDir(selected);
+    }
+
+    private void DirPlayButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_selectedMediaFile != null)
+            OpenWithPlayer(_selectedMediaFile.FilePath);
+    }
+
+    private void ClearDirPanel()
+    {
+        _selectedMediaFile = null;
+        DirTitle.Text = "";
+        DirService.Text = "";
+        DirDateTime.Text = "";
+        DirFilePath.Text = "";
+        DirDrops.Text = "";
+        DirProgramInfo.Text = "";
+        DirProgramInfoLabel.Visibility = Visibility.Collapsed;
+        DirProgramInfo.Visibility = Visibility.Collapsed;
+        DirPlayButton.Visibility = Visibility.Collapsed;
+    }
 
     private void Refresh_Click(object sender, RoutedEventArgs e) => Reload();
 
@@ -1160,72 +1561,170 @@ public partial class MainWindow : Window
     /// ListView は PageDown/Home/End をスクロール・選択移動として消費するため、
     /// KeyDown（バブリング）まで届かない。PreviewKeyDown なら確実に先取りできる。
     /// </summary>
+    // ─── 予約録画ページング ───────────────────────────────────────────────────
+
+    private int _resCurrentPage = 0;
+    private int ResTotalPages(int count) => Math.Max(1, (count + PageSize - 1) / PageSize);
+
+    private List<ReserveData> GetResList()
+    {
+        var filtered = _resList.Where(r => ResFilter(r)).ToList();
+        if (_resSortProp != null)
+        {
+            var asc = _resSortAsc;
+            Comparison<ReserveData> cmp = _resSortProp switch
+            {
+                "Title"          => (a, b) => string.Compare(a.Title, b.Title, StringComparison.CurrentCulture),
+                "StationName"    => (a, b) => string.Compare(a.StationName, b.StationName, StringComparison.CurrentCulture),
+                "StartTime"      => (a, b) => a.StartTime.CompareTo(b.StartTime),
+                "DurationSecond" => (a, b) => a.DurationSecond.CompareTo(b.DurationSecond),
+                "ReserveStatus"  => (a, b) => a.ReserveStatus.CompareTo(b.ReserveStatus),
+                _                => (a, b) => a.StartTime.CompareTo(b.StartTime),
+            };
+            filtered.Sort(asc ? cmp : (a, b) => -cmp(a, b));
+        }
+        return filtered;
+    }
+
+    private void ShowResPage()
+    {
+        var list = GetResList();
+        var total = list.Count;
+        var totalPages = ResTotalPages(total);
+        _resCurrentPage = Math.Clamp(_resCurrentPage, 0, totalPages - 1);
+
+        ReserveList.ItemsSource = list.Skip(_resCurrentPage * PageSize).Take(PageSize).ToList();
+
+        var hasPrev = _resCurrentPage > 0;
+        var hasNext = _resCurrentPage < totalPages - 1;
+        ResFirstPageButton.IsEnabled = hasPrev;
+        ResPrevPageButton.IsEnabled  = hasPrev;
+        ResNextPageButton.IsEnabled  = hasNext;
+        ResLastPageButton.IsEnabled  = hasNext;
+        ResPageLabel.Text = totalPages > 1 ? $"{_resCurrentPage + 1} / {totalPages} ページ" : "";
+        ResCountText.Text = $"{total:#,0} 件";
+    }
+
+    private void ResFirstPage_Click(object sender, RoutedEventArgs e) { _resCurrentPage = 0; ShowResPage(); }
+    private void ResPrevPage_Click(object sender, RoutedEventArgs e)  { _resCurrentPage--; ShowResPage(); }
+    private void ResNextPage_Click(object sender, RoutedEventArgs e)  { _resCurrentPage++; ShowResPage(); }
+    private void ResLastPage_Click(object sender, RoutedEventArgs e)  { _resCurrentPage = int.MaxValue; ShowResPage(); }
+
+    private string ActiveTab => (MainTab.SelectedItem as TabItem)?.Header?.ToString() ?? "";
+
+    private TextBox? GetCurrentSearchBox() => ActiveTab switch
+    {
+        "録画済み"     => RecSearchBox,
+        "予約録画"     => ResSearchBox,
+        "ディレクトリ" => DirSearchBox,
+        _              => null,
+    };
+
+
+    // PreviewTextInput はテキスト確定時に発火するため、イベントルーティング中の Focus() による
+    // WPF 不正状態を避けつつ最初の1文字を確実に検索ボックスへ届けられる。
+    private void Window_PreviewTextInput(object sender, System.Windows.Input.TextCompositionEventArgs e)
+    {
+        if (Keyboard.FocusedElement is TextBox tb && !tb.IsReadOnly) return;
+        var searchBox = GetCurrentSearchBox();
+        if (searchBox == null) return;
+        searchBox.Focus();
+        searchBox.AppendText(e.Text);
+        searchBox.CaretIndex = searchBox.Text.Length;
+        e.Handled = true;
+    }
+
     private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
     {
-        // 編集可能 TextBox 入力中はカーソル移動を優先
         if (Keyboard.FocusedElement is TextBox tb && !tb.IsReadOnly) return;
 
+        var tab = ActiveTab;
         switch (e.Key)
         {
             case Key.PageDown:
-                NextPage_Click(this, new RoutedEventArgs());
+                if      (tab == "ディレクトリ") DirNextPage_Click(this, new RoutedEventArgs());
+                else if (tab == "予約録画")     ResNextPage_Click(this, new RoutedEventArgs());
+                else                            NextPage_Click(this, new RoutedEventArgs());
                 e.Handled = true;
                 break;
             case Key.PageUp:
-                PrevPage_Click(this, new RoutedEventArgs());
+                if      (tab == "ディレクトリ") DirPrevPage_Click(this, new RoutedEventArgs());
+                else if (tab == "予約録画")     ResPrevPage_Click(this, new RoutedEventArgs());
+                else                            PrevPage_Click(this, new RoutedEventArgs());
                 e.Handled = true;
                 break;
             case Key.Home:
-                FirstPage_Click(this, new RoutedEventArgs());
+                if      (tab == "ディレクトリ") DirFirstPage_Click(this, new RoutedEventArgs());
+                else if (tab == "予約録画")     ResFirstPage_Click(this, new RoutedEventArgs());
+                else                            FirstPage_Click(this, new RoutedEventArgs());
                 e.Handled = true;
                 break;
             case Key.End:
-                LastPage_Click(this, new RoutedEventArgs());
+                if      (tab == "ディレクトリ") DirLastPage_Click(this, new RoutedEventArgs());
+                else if (tab == "予約録画")     ResLastPage_Click(this, new RoutedEventArgs());
+                else                            LastPage_Click(this, new RoutedEventArgs());
                 e.Handled = true;
                 break;
         }
     }
 
-    /// <summary>
-    /// KeyDown（バブリング）。F5・Enter・↑↓を処理する。
-    /// ↑↓は ListView にフォーカスがある場合 ListView 側で処理済み（Handled）のため
-    /// ここには届かない。右ペイン等にフォーカスがある場合のみ MoveRecListSelection を呼ぶ。
-    /// </summary>
     private void Window_Closing(object sender, CancelEventArgs e)
     {
         SaveProgInfoCache();
+        _recordingIndex.Dispose();
     }
 
     private void Window_KeyDown(object sender, KeyEventArgs e)
     {
         var isEditable = Keyboard.FocusedElement is TextBox tb && !tb.IsReadOnly;
+        var tab = ActiveTab;
 
         switch (e.Key)
         {
+            case Key.D1 when e.KeyboardDevice.Modifiers == ModifierKeys.Control:
+                MainTab.SelectedIndex = 0;
+                e.Handled = true;
+                break;
+            case Key.D2 when e.KeyboardDevice.Modifiers == ModifierKeys.Control:
+                MainTab.SelectedIndex = 1;
+                e.Handled = true;
+                break;
+            case Key.D3 when e.KeyboardDevice.Modifiers == ModifierKeys.Control:
+                MainTab.SelectedIndex = 2;
+                e.Handled = true;
+                break;
             case Key.F5:
-                Reload();
+                if (tab == "ディレクトリ") LoadMediaFiles();
+                else Reload();
                 e.Handled = true;
                 break;
             case Key.Enter when !isEditable:
-                RecSearch_Click(this, new RoutedEventArgs());
+                if (tab == "録画済み" && _selectedRec != null)
+                    OpenWithPlayer(_settings.ToUncPath(_selectedRec.RecFilePath));
+                else if (tab == "ディレクトリ" && _selectedMediaFile != null)
+                {
+                    if (_selectedMediaFile.IsDirectory) NavigateDir(_selectedMediaFile.FilePath);
+                    else OpenWithPlayer(_selectedMediaFile.FilePath);
+                }
+                else if (tab == "予約録画")
+                    ReserveList_DoubleClick(this, null!);
                 e.Handled = true;
                 break;
             case Key.Up when !isEditable:
-                MoveRecListSelection(-1);
+                if (tab == "ディレクトリ") MoveDirListSelection(-1);
+                else if (tab == "録画済み") MoveRecListSelection(-1);
+                else MoveResListSelection(-1);
                 e.Handled = true;
                 break;
             case Key.Down when !isEditable:
-                MoveRecListSelection(+1);
+                if (tab == "ディレクトリ") MoveDirListSelection(+1);
+                else if (tab == "録画済み") MoveRecListSelection(+1);
+                else MoveResListSelection(+1);
                 e.Handled = true;
                 break;
         }
     }
 
-    /// <summary>
-    /// 録画一覧の選択を delta 行分移動してスクロールする。
-    /// ListView 自身にフォーカスがない状態（右ペイン等を見ている間）でも
-    /// ↑↓キーで選択を動かすために Window_KeyDown から呼ぶ。
-    /// </summary>
     private void MoveRecListSelection(int delta)
     {
         var count = RecInfoList.Items.Count;
@@ -1233,6 +1732,24 @@ public partial class MainWindow : Window
         var next = Math.Clamp(RecInfoList.SelectedIndex + delta, 0, count - 1);
         RecInfoList.SelectedIndex = next;
         RecInfoList.ScrollIntoView(RecInfoList.SelectedItem);
+    }
+
+    private void MoveResListSelection(int delta)
+    {
+        var count = ReserveList.Items.Count;
+        if (count == 0) return;
+        var next = Math.Clamp(ReserveList.SelectedIndex + delta, 0, count - 1);
+        ReserveList.SelectedIndex = next;
+        ReserveList.ScrollIntoView(ReserveList.SelectedItem);
+    }
+
+    private void MoveDirListSelection(int delta)
+    {
+        var count = DirList.Items.Count;
+        if (count == 0) return;
+        var next = Math.Clamp(DirList.SelectedIndex + delta, 0, count - 1);
+        DirList.SelectedIndex = next;
+        DirList.ScrollIntoView(DirList.SelectedItem);
     }
 
     private void Settings_Click(object sender, RoutedEventArgs e)

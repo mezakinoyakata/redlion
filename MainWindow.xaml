@@ -4,6 +4,7 @@
         Title="EDCB Viewer" Height="700" Width="1100" MinHeight="500" MinWidth="800"
         Background="#FF1E1E1E"
         PreviewKeyDown="Window_PreviewKeyDown"
+        PreviewTextInput="Window_PreviewTextInput"
         KeyDown="Window_KeyDown"
         Closing="Window_Closing">
     <Window.Resources>
@@ -323,9 +324,10 @@
                         <ColumnDefinition Width="1*" MinWidth="250"/>
                     </Grid.ColumnDefinitions>
 
-                    <!-- 予約一覧 (検索バー + リスト) -->
+                    <!-- 予約一覧 (検索バー + ページング + リスト) -->
                     <Grid Grid.Column="0">
                         <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
                             <RowDefinition Height="Auto"/>
                             <RowDefinition Height="*"/>
                         </Grid.RowDefinitions>
@@ -341,12 +343,44 @@
                                            Margin="0,0,6,0"/>
                                 <TextBox x:Name="ResSearchBox"
                                          Style="{StaticResource SearchBoxStyle}"
-                                         TextChanged="ResSearchBox_TextChanged"/>
+                                         TextChanged="ResSearchBox_TextChanged"
+                                         KeyDown="ResSearchBox_KeyDown"/>
+                            </DockPanel>
+                        </Border>
+
+                        <!-- ページナビゲーション -->
+                        <Border Grid.Row="1" Background="#FF222222"
+                                BorderBrush="#FF444444" BorderThickness="0,0,0,1"
+                                Padding="4,3">
+                            <DockPanel>
+                                <Button x:Name="ResFirstPageButton" DockPanel.Dock="Left"
+                                        Content="⏮" Width="32" Padding="4,2"
+                                        Click="ResFirstPage_Click" IsEnabled="False"
+                                        Margin="0,0,2,0"/>
+                                <Button x:Name="ResPrevPageButton" DockPanel.Dock="Left"
+                                        Content="◀ 前" Width="52" Padding="4,2"
+                                        Click="ResPrevPage_Click" IsEnabled="False"/>
+                                <Button x:Name="ResLastPageButton" DockPanel.Dock="Right"
+                                        Content="⏭" Width="32" Padding="4,2"
+                                        Click="ResLastPage_Click" IsEnabled="False"
+                                        Margin="2,0,0,0"/>
+                                <Button x:Name="ResNextPageButton" DockPanel.Dock="Right"
+                                        Content="次 ▶" Width="52" Padding="4,2"
+                                        Click="ResNextPage_Click" IsEnabled="False"/>
+                                <StackPanel Orientation="Horizontal"
+                                            HorizontalAlignment="Center"
+                                            VerticalAlignment="Center">
+                                    <TextBlock x:Name="ResPageLabel"
+                                               Foreground="#FFB0B0B0" FontSize="12"/>
+                                    <TextBlock x:Name="ResCountText"
+                                               Foreground="#FF888888" FontSize="12"
+                                               Margin="16,0,0,0"/>
+                                </StackPanel>
                             </DockPanel>
                         </Border>
 
                         <!-- 予約リスト -->
-                        <ListView x:Name="ReserveList" Grid.Row="1"
+                        <ListView x:Name="ReserveList" Grid.Row="2"
                                   SelectionChanged="ReserveList_SelectionChanged"
                                   MouseDoubleClick="ReserveList_DoubleClick"
                                   GridViewColumnHeader.Click="ReserveList_ColumnHeaderClick">
@@ -418,6 +452,156 @@
                                        Style="{StaticResource InfoLabel}" Text="番組情報"/>
                             <TextBox x:Name="ResProgramInfo" Style="{StaticResource SelectableValue}"
                                      FontSize="12" TextWrapping="Wrap"/>
+                        </StackPanel>
+                    </ScrollViewer>
+                </Grid>
+            </TabItem>
+
+
+            <!-- ディレクトリタブ -->
+            <TabItem Header="ディレクトリ">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="2*" MinWidth="400"/>
+                        <ColumnDefinition Width="5"/>
+                        <ColumnDefinition Width="1*" MinWidth="250"/>
+                    </Grid.ColumnDefinitions>
+
+                    <!-- ファイル一覧 (パスバー + 検索バー + ページング + リスト) -->
+                    <Grid Grid.Column="0">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="*"/>
+                        </Grid.RowDefinitions>
+
+                        <!-- アドレスバー（パス表示 + ナビゲーション） -->
+                        <Border Grid.Row="0" Background="#FF1A1A1A"
+                                BorderBrush="#FF444444" BorderThickness="0,0,0,1"
+                                Padding="6,4">
+                            <DockPanel>
+                                <Button DockPanel.Dock="Right" Content="…"
+                                        Width="32" Padding="4,2" Margin="4,0,0,0"
+                                        Click="DirBrowse_Click" ToolTip="フォルダを選択"/>
+                                <TextBox x:Name="DirPathBox"
+                                         Background="Transparent" Foreground="#FFE0E0E0"
+                                         BorderThickness="1" BorderBrush="#FF555555"
+                                         CaretBrush="#FFE0E0E0" SelectionBrush="#FF0078D4"
+                                         FontSize="12" Padding="4,2"
+                                         VerticalAlignment="Center"
+                                         KeyDown="DirPathBox_KeyDown"/>
+                            </DockPanel>
+                        </Border>
+
+                        <!-- 検索バー -->
+                        <Border Grid.Row="1" Background="#FF252525"
+                                BorderBrush="#FF444444" BorderThickness="0,0,0,1"
+                                Padding="8,5">
+                            <DockPanel>
+                                <TextBlock DockPanel.Dock="Left"
+                                           Text="絞込:" Foreground="#FF888888"
+                                           FontSize="12" VerticalAlignment="Center"
+                                           Margin="0,0,6,0"/>
+                                <TextBox x:Name="DirSearchBox"
+                                         Style="{StaticResource SearchBoxStyle}"
+                                         TextChanged="DirSearchBox_TextChanged"
+                                         KeyDown="DirSearchBox_KeyDown"/>
+                            </DockPanel>
+                        </Border>
+
+                        <!-- ページナビゲーション -->
+                        <Border Grid.Row="2" Background="#FF222222"
+                                BorderBrush="#FF444444" BorderThickness="0,0,0,1"
+                                Padding="4,3">
+                            <DockPanel>
+                                <Button x:Name="DirFirstPageButton" DockPanel.Dock="Left"
+                                        Content="⏮" Width="32" Padding="4,2"
+                                        Click="DirFirstPage_Click" IsEnabled="False"
+                                        Margin="0,0,2,0"/>
+                                <Button x:Name="DirPrevPageButton" DockPanel.Dock="Left"
+                                        Content="◀ 前" Width="52" Padding="4,2"
+                                        Click="DirPrevPage_Click" IsEnabled="False"/>
+                                <Button x:Name="DirLastPageButton" DockPanel.Dock="Right"
+                                        Content="⏭" Width="32" Padding="4,2"
+                                        Click="DirLastPage_Click" IsEnabled="False"
+                                        Margin="2,0,0,0"/>
+                                <Button x:Name="DirNextPageButton" DockPanel.Dock="Right"
+                                        Content="次 ▶" Width="52" Padding="4,2"
+                                        Click="DirNextPage_Click" IsEnabled="False"/>
+                                <Button DockPanel.Dock="Right" Content="更新"
+                                        Width="52" Padding="4,2" Margin="2,0,4,0"
+                                        Click="DirRefresh_Click"/>
+                                <StackPanel Orientation="Horizontal"
+                                            HorizontalAlignment="Center"
+                                            VerticalAlignment="Center">
+                                    <TextBlock x:Name="DirPageLabel"
+                                               Foreground="#FFB0B0B0" FontSize="12"/>
+                                    <TextBlock x:Name="DirCountText"
+                                               Foreground="#FF888888" FontSize="12"
+                                               Margin="16,0,0,0"/>
+                                </StackPanel>
+                            </DockPanel>
+                        </Border>
+
+                        <!-- ファイルリスト -->
+                        <ListView x:Name="DirList" Grid.Row="3"
+                                  SelectionChanged="DirList_SelectionChanged"
+                                  MouseDoubleClick="DirList_DoubleClick"
+                                  GridViewColumnHeader.Click="DirList_ColumnHeaderClick">
+                            <ListView.View>
+                                <GridView>
+                                    <GridViewColumn Header="ファイル名" Width="250"
+                                        DisplayMemberBinding="{Binding DisplayName}"/>
+                                    <GridViewColumn Header="放送局" Width="100"
+                                        DisplayMemberBinding="{Binding ParsedStation}"/>
+                                    <GridViewColumn Header="放送日時" Width="130">
+                                        <GridViewColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <TextBlock Text="{Binding ParsedStartTimeText}"
+                                                           Foreground="#FFE0E0E0"/>
+                                            </DataTemplate>
+                                        </GridViewColumn.CellTemplate>
+                                    </GridViewColumn>
+                                </GridView>
+                            </ListView.View>
+                        </ListView>
+                    </Grid>
+
+                    <GridSplitter Grid.Column="1" Width="5" HorizontalAlignment="Stretch"
+                                  Background="#FF444444"/>
+
+                    <!-- 番組情報パネル (インデックスから) -->
+                    <ScrollViewer Grid.Column="2" Background="#FF252525"
+                                  VerticalScrollBarVisibility="Auto">
+                        <StackPanel x:Name="DirInfoPanel" Margin="12">
+
+                            <TextBox x:Name="DirTitle" Style="{StaticResource SelectableValue}"
+                                     Foreground="White" FontSize="15" FontWeight="SemiBold"
+                                     Margin="0,0,0,8"/>
+
+                            <TextBlock Style="{StaticResource InfoLabel}" Text="放送局"/>
+                            <TextBox x:Name="DirService" Style="{StaticResource SelectableValue}"/>
+
+                            <TextBlock Style="{StaticResource InfoLabel}" Text="放送日時"/>
+                            <TextBox x:Name="DirDateTime" Style="{StaticResource SelectableValue}"/>
+
+                            <TextBlock Style="{StaticResource InfoLabel}" Text="ファイルパス"/>
+                            <TextBox x:Name="DirFilePath" Style="{StaticResource SelectableValue}"
+                                     FontSize="11" Foreground="#FFB0B0B0"/>
+
+                            <TextBlock Style="{StaticResource InfoLabel}" Text="ドロップ / スクランブル"/>
+                            <TextBox x:Name="DirDrops" Style="{StaticResource SelectableValue}"/>
+
+                            <TextBlock x:Name="DirProgramInfoLabel"
+                                       Style="{StaticResource InfoLabel}" Text="番組情報"
+                                       Visibility="Collapsed"/>
+                            <TextBox x:Name="DirProgramInfo" Style="{StaticResource SelectableValue}"
+                                     FontSize="12" Visibility="Collapsed"/>
+
+                            <Button x:Name="DirPlayButton" Content="MPC-BE で再生"
+                                    Margin="0,16,0,0" HorizontalAlignment="Left"
+                                    Click="DirPlayButton_Click" Visibility="Collapsed"/>
                         </StackPanel>
                     </ScrollViewer>
                 </Grid>
