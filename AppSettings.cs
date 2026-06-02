@@ -28,6 +28,9 @@ public class AppSettings
     /// <summary>EpgData.db のフルパス（例: \\5600x\c\ap\edcb\Setting\EpgData.db）</summary>
     public string EpgDbPath { get; set; } = "";
 
+    /// <summary>EPG MySQL 接続文字列（例: Server=5600x;Database=edcbviewer;Uid=edcb;Pwd=pass）</summary>
+    public string EpgMysqlConnectionString { get; set; } = "";
+
     // API が返すファイルパスはサーバー側のローカルパス (例: D:\PT2\foo.ts)
     // EmwuiBaseUrl のホスト名を使って UNC パスに変換する:
     //   "D:\PT2\foo.ts" + host "5600x" → "\\5600x\d\PT2\foo.ts"

@@ -362,7 +362,7 @@ public partial class MainWindow : Window
         {
             // 新しい順（items はソート済み）に逐次取得。番組情報なし → 以降中断。
             int seqDone = 0;
-            var seqEpgDb = new EpgDbReader(_settings.EpgDbPath);
+            var seqEpgDb = new EpgDbReader(_settings.EpgMysqlConnectionString);
             foreach (var item in items)
             {
                 if (ct.IsCancellationRequested) break;
@@ -414,7 +414,7 @@ public partial class MainWindow : Window
         var sem = new SemaphoreSlim(concurrency);
         int done = 0;
         int total = items.Count;
-        var epgDb = new EpgDbReader(_settings.EpgDbPath);
+        var epgDb = new EpgDbReader(_settings.EpgMysqlConnectionString);
 
         var tasks = items.Select(async item =>
         {
@@ -1023,7 +1023,7 @@ public partial class MainWindow : Window
         // EpgData.db から取得
         if (info.EventID != 0)
         {
-            var epgText = new EpgDbReader(_settings.EpgDbPath).GetEventInfoText(
+            var epgText = new EpgDbReader(_settings.EpgMysqlConnectionString).GetEventInfoText(
                 info.OriginalNetworkID, info.TransportStreamID, info.ServiceID, info.EventID);
             if (!string.IsNullOrEmpty(epgText))
             {
@@ -1204,7 +1204,7 @@ public partial class MainWindow : Window
             if (data.EventID != 0)
             {
                 // EpgData.db から取得
-                text = new EpgDbReader(_settings.EpgDbPath).GetEventInfoText(
+                text = new EpgDbReader(_settings.EpgMysqlConnectionString).GetEventInfoText(
                     data.OriginalNetworkID, data.TransportStreamID,
                     data.ServiceID, data.EventID) ?? "";
 
