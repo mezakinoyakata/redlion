@@ -344,6 +344,11 @@ public partial class MainWindow : Window
             // _recList で先行キャッシュ済みの分は ContainsKey でスキップ。
             if (!ct.IsCancellationRequested)
                 _ = BackgroundFetchProgramInfoAsync(all, client, ct);
+
+            // キャッシュ済みの番組情報を MySQL に書き込む（INSERT IGNORE: 既存行は上書きしない）
+            if (!ct.IsCancellationRequested)
+                _ = new EpgDbReader(_settings.DbConnectionString)
+                        .SyncCacheToDbAsync(all, _programInfoCache);
         }
         catch (OperationCanceledException) { }
         catch { /* 全件取得失敗は無視（ページ検索で代替） */ }

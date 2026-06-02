@@ -13,7 +13,7 @@ EDCB（EpgTimerSrv）と連携する Windows WPF アプリケーション。
 |---|---|
 | 場所 | `C:\work\CC\EDCBViewer` |
 | フレームワーク | .NET 9.0 / WPF / Windows |
-| 依存パッケージ | Microsoft.Data.Sqlite 9.0.0 |
+| 依存パッケージ | MySqlConnector、Microsoft.Data.Sqlite 9.0.0（録画インデックスDB用） |
 | ビルド | `dotnet build -c Release`（`dotnet publish` は使わない、`-c Release` 必須） |
 
 ---
@@ -38,6 +38,7 @@ EDCBViewer/
 │   ├── RecInfoParser.cs       RecInfo テキストパーサー
 │   └── ReserveParser.cs       Reserve テキストパーサー
 └── Services/
+    ├── EpgDbReader.cs         MySQL EPG DB 読み取り（MySqlConnector）
     ├── RecordingIndex.cs      録画インデックスDB管理（SQLite）
     └── PlayServer.cs          ローカル再生HTTPサーバー
 ```
@@ -55,13 +56,22 @@ EDCBViewer/
 | RefreshIntervalSeconds | 自動更新間隔（現在は手動更新のみ） | 60 |
 | PlayServerPort | 再生サーバーポート | 5580 |
 | EncodedFolder | エンコード済みフォルダ（ディレクトリタブ） | `""` |
-| EpgDataFolder | EDCB の EpgData フォルダ（*_epg.dat の場所） | `""` |
+| EpgDataFolder | EDCB の EpgData フォルダ（*_epg.dat の場所、現在未使用） | `""` |
+| DbConnectionString | MySQL 接続文字列（EPG DB 参照用） | `""` |
 
 設定ファイルパス: `%LOCALAPPDATA%\EDCBViewer\settings.json`
 
+### DbConnectionString の形式
+
+```
+Server=5600x;Database=edcbviewer;Uid=edcb;Pwd=（パスワード）
+```
+
+未設定の場合、EPG DB 参照をスキップして EMWUI フォールバックのみ使用する。
+
 ---
 
-## データ取得フロー（現在）
+## データ取得フロー
 
 ### 録画済み一覧
 ```
@@ -79,40 +89,59 @@ EmwuiClient.GetReserveInfoAsync()
 
 ### 番組情報（録画済み選択時）
 ```
-EmwuiClient.GetProgramInfoTextAsync(id)
-  → GET /api/EnumRecInfo?id=N
-  → programInfo フィールド（プレーンテキスト）を抽出
-  → メモリキャッシュ（_programInfoCache）に保存
+① キャッシュ確認（_programInfoCache）→ ヒットなら即表示
+② EpgDbReader.GetEventInfoText(onid, tsid, sid, event_id)
+     → MySQL events テーブル検索
+     → short_text + ext_text を返す
+③ ② が空なら EMWUI フォールバック
+     → GET /api/EnumRecInfo?id=N → programInfo フィールド
 ```
 
-### 番組情報（予約選択時）← **DB移行予定**
+### 番組情報（予約選択時）
 ```
-【現在】
-EmwuiClient.GetEventInfoTextAsync(onid, tsid, sid, eid)
-  → GET /api/EnumEventInfo?basic=0&id=ONID-TSID-SID-EID
-  → event_text + event_ext_text を返す
-
-【予定】
-EpgData.db の events テーブルを ONID/TSID/SID/EventID で検索
-  → short_text + ext_text を返す
-  → EMWUI 接続不要・オフライン参照可
+① EpgDbReader.GetEventInfoText(onid, tsid, sid, event_id)
+     → MySQL events テーブル検索
+② ① が空なら EMWUI フォールバック
+     → GET /api/EnumEventInfo?basic=0&id=ONID-TSID-SID-EID
 ```
 
 ---
 
-## SQLiteデータベース
+## SQLiteデータベース（録画インデックス）
 
-### 録画インデックスDB
 - パス: `%LOCALAPPDATA%\EDCBViewer\recording_index.db`
 - 管理クラス: `Services/RecordingIndex.cs`
 - テーブル: `recordings`（録画済みファイルのメタデータを蓄積）
 - `start_time_epg` など後付けカラムは空文字列になりうるため `ReadEntry` で `ParseDt()` により `default` にフォールバック
 
-### EPG DB（連携予定）
-- パス: EpgTimerSrv の `{SettingPath}\EpgData.db`
-- EpgTimerSrv が書き出す（詳細は EpgSqliteExporter_Spec.md 参照）
-- EDCBViewer は読み取り専用で参照
-- テーブル: services / events / event_genres / event_audio / event_groups
+---
+
+## MySQL EPG DB 連携
+
+### EpgDbReader
+
+- クラス: `Services/EpgDbReader.cs`
+- 使用ライブラリ: `MySqlConnector`
+- 接続文字列: `AppSettings.DbConnectionString`
+- `IsConfigured` が false（DbConnectionString 未設定）の場合は null を返す
+
+#### GetEventInfoText
+`(onid, tsid, sid, event_id)` で events テーブルを PK 検索し `short_text + ext_text` を返す。
+
+#### SyncCacheToDbAsync
+起動時に `LoadAllRecInfoAsync` 完了後に自動実行。  
+`proginfo_cache.json` に蓄積された番組情報を events テーブルへ書き込む。
+
+- `INSERT INTO ... ON DUPLICATE KEY UPDATE` を使用
+- EpgTimerSrv が書き出した既存行の EPG テキストは上書きしない
+- `start_time` が NULL の行のみ更新（EpgTimerSrv 書き出し分を保護）
+- `reserve_status` が 2 未満の行のみ 2 に更新
+- `EventID=0` の録画は除外（PK が作れないため）
+
+### 書き込み側（EpgTimerSrv）
+
+EpgTimerSrv（C++）が EPG ロード完了後に MySQL へ REPLACE INTO する。  
+詳細は `C:\work\CC\EDCB\EpgSqliteExporter_Spec.md` を参照。
 
 ---
 
@@ -142,29 +171,8 @@ EpgData.db の events テーブルを ONID/TSID/SID/EventID で検索
 
 ### EpgTimerSrv（C++）
 - EMWUI HTTP API を通じて録画済み・予約情報を取得
-- **EPG DB（EpgData.db）**: EpgTimerSrv が書き出す SQLite を EDCBViewer が参照する（移行予定）
+- **EPG DB（MySQL）**: EpgTimerSrv が書き出す MySQL を EDCBViewer が参照する
 
 ### EDCBEpgImporter（C#）
 - `C:\work\CC\EDCBEpgImporter`
-- *_epg.dat を読んで同一スキーマの SQLite に書き出すスタンドアロンツール
-- EpgTimerSrv 組み込み版（EpgSqliteExporter）と同じスキーマ
-
----
-
-## 移行予定: EMWUI EPG → DB参照
-
-### 対象
-`ReserveList_SelectionChanged` 内の `GetEventInfoTextAsync` 呼び出し
-
-### 変更内容
-- `EmwuiClient.GetEventInfoTextAsync()` を廃止
-- `EpgData.db` の `events` テーブルを (onid, tsid, sid, event_id) で検索
-- `short_text` + `ext_text` を連結して番組説明として表示
-
-### メリット
-- EMWUI への HTTP 接続が不要（オフライン・高速）
-- EpgTimerSrv が蓄積した過去の EPG も参照可能
-
-### 必要な追加設定
-- `AppSettings` に `EpgDbPath`（EpgData.db のパス）を追加予定
-  - または `EpgDataFolder` を転用して同フォルダの `EpgData.db` を探す
+- `*_epg.dat` を読んで SQLite に書き出すスタンドアロンツール（開発・検証用）
