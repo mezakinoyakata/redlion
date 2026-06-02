@@ -25,11 +25,8 @@ public class AppSettings
     /// <summary>EDCBのEPGデータフォルダ（*_epg.dat が置かれている場所）。</summary>
     public string EpgDataFolder { get; set; } = "";
 
-    /// <summary>EpgData.db のフルパス（例: \\5600x\c\ap\edcb\Setting\EpgData.db）</summary>
-    public string EpgDbPath { get; set; } = "";
-
-    /// <summary>EPG MySQL 接続文字列（例: Server=5600x;Database=edcbviewer;Uid=edcb;Pwd=pass）</summary>
-    public string EpgMysqlConnectionString { get; set; } = "";
+    /// <summary>MySQL 接続文字列（例: Server=5600x;Database=edcbviewer;Uid=edcb;Pwd=pass）</summary>
+    public string DbConnectionString { get; set; } = "";
 
     // API が返すファイルパスはサーバー側のローカルパス (例: D:\PT2\foo.ts)
     // EmwuiBaseUrl のホスト名を使って UNC パスに変換する:
@@ -83,12 +80,6 @@ public class AppSettings
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "EDCBViewer",
             "proginfo_cache.json");
-
-    public static string RecordingIndexPath =>
-        Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "EDCBViewer",
-            "recording_index.db");
 
     public static AppSettings Load()
     {

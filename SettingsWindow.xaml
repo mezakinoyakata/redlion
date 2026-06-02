@@ -56,8 +56,6 @@
                 <RowDefinition Height="Auto"/>
                 <RowDefinition Height="Auto"/>
                 <RowDefinition Height="Auto"/>
-                <RowDefinition Height="Auto"/>
-                <RowDefinition Height="Auto"/>
             </Grid.RowDefinitions>
 
             <!-- EMWUI URL -->
@@ -95,24 +93,11 @@
 
             <Separator Grid.Row="12"/>
 
-            <!-- EPGデータフォルダ -->
-            <Label Grid.Row="12" Content="EPGデータフォルダのパス（例: \\5600x\c\ap\edcb\Setting\EpgData）"/>
-            <DockPanel Grid.Row="13">
-                <Button DockPanel.Dock="Right" Content="参照..." Width="60"
-                        Margin="6,0,0,0" Click="BrowseEpgFolder_Click"/>
-                <TextBox x:Name="EpgDataFolderBox"/>
-            </DockPanel>
-
-            <Separator Grid.Row="14"/>
-
-            <!-- EpgData.db パス -->
-            <Label Grid.Row="15" Content="EpgData.db のパス（例: \\5600x\c\ap\edcb\Setting\EpgData.db）"
+            <!-- MySQL 接続文字列 -->
+            <Label Grid.Row="13" Content="MySQL 接続文字列（例: Server=5600x;Database=edcbviewer;Uid=edcb;Pwd=pass）"
                    Foreground="#FF6BC5FF"/>
-            <DockPanel Grid.Row="16">
-                <Button DockPanel.Dock="Right" Content="参照..." Width="60"
-                        Margin="6,0,0,0" Click="BrowseEpgDb_Click"/>
-                <TextBox x:Name="EpgDbPathBox"/>
-            </DockPanel>
+            <TextBox x:Name="DbConnectionStringBox" Grid.Row="14"
+                     FontFamily="Consolas" FontSize="12"/>
         </Grid>
     </DockPanel>
 </Window>
