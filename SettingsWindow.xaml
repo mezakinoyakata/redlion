@@ -93,11 +93,11 @@
             <Separator Grid.Row="12"/>
 
             <!-- PostgreSQL 接続文字列 -->
-            <Label Grid.Row="13" Content="PostgreSQL 接続文字列（録画サーバー）"
+            <Label Grid.Row="13" Content="MySQL 接続文字列（録画サーバー）"
                    Foreground="#FF6BC5FF"/>
             <TextBox x:Name="DbConnectionStringBox" Grid.Row="14"
                      FontFamily="Consolas" FontSize="12"
-                     Text="Host=5600x;Database=edcbviewer;Username=edcb;Password="/>
+                     Text="Server=5600x;Database=edcbviewer;Uid=edcb;Pwd="/>
         </Grid>
     </DockPanel>
 </Window>

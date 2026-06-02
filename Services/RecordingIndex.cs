@@ -1,6 +1,5 @@
-using System.Text.Json;
 using System.Text.RegularExpressions;
-using Npgsql;
+using MySqlConnector;
 using EDCBViewer.Models;
 
 namespace EDCBViewer.Services;
@@ -37,9 +36,9 @@ public sealed class RecordingIndex : IDisposable
         return (title, null);
     }
 
-    private NpgsqlConnection OpenConnection()
+    private MySqlConnection OpenConnection()
     {
-        var conn = new NpgsqlConnection(_connStr);
+        var conn = new MySqlConnection(_connStr);
         conn.Open();
         return conn;
     }
@@ -54,34 +53,34 @@ public sealed class RecordingIndex : IDisposable
             using var create = conn.CreateCommand();
             create.CommandText = @"
                 CREATE TABLE IF NOT EXISTS recordings (
-                    file_name          TEXT PRIMARY KEY,
-                    full_title         TEXT NOT NULL DEFAULT '',
-                    series_title       TEXT NOT NULL DEFAULT '',
-                    episode_number     INTEGER,
-                    start_time         TEXT NOT NULL DEFAULT '',
-                    start_time_epg     TEXT NOT NULL DEFAULT '',
-                    duration_second    BIGINT NOT NULL DEFAULT 0,
-                    service_name       TEXT NOT NULL DEFAULT '',
-                    rec_id             BIGINT NOT NULL DEFAULT 0,
-                    onid               BIGINT NOT NULL DEFAULT 0,
-                    tsid               BIGINT NOT NULL DEFAULT 0,
-                    sid                BIGINT NOT NULL DEFAULT 0,
-                    event_id           BIGINT NOT NULL DEFAULT 0,
-                    program_info       TEXT NOT NULL DEFAULT '',
-                    comment            TEXT NOT NULL DEFAULT '',
-                    err_info           TEXT NOT NULL DEFAULT '',
-                    drops              BIGINT NOT NULL DEFAULT 0,
-                    scrambles          BIGINT NOT NULL DEFAULT 0,
-                    rec_status         BIGINT NOT NULL DEFAULT 0,
-                    protect_flag       BIGINT NOT NULL DEFAULT 0,
-                    original_file_path TEXT NOT NULL DEFAULT '',
-                    saved_at           TEXT NOT NULL DEFAULT ''
-                )";
+                    file_name          VARCHAR(255) PRIMARY KEY,
+                    full_title         TEXT         NOT NULL DEFAULT '',
+                    series_title       TEXT         NOT NULL DEFAULT '',
+                    episode_number     INT,
+                    start_time         VARCHAR(50)  NOT NULL DEFAULT '',
+                    start_time_epg     VARCHAR(50)  NOT NULL DEFAULT '',
+                    duration_second    BIGINT       NOT NULL DEFAULT 0,
+                    service_name       TEXT         NOT NULL DEFAULT '',
+                    rec_id             BIGINT       NOT NULL DEFAULT 0,
+                    onid               BIGINT       NOT NULL DEFAULT 0,
+                    tsid               BIGINT       NOT NULL DEFAULT 0,
+                    sid                BIGINT       NOT NULL DEFAULT 0,
+                    event_id           BIGINT       NOT NULL DEFAULT 0,
+                    program_info       MEDIUMTEXT   NOT NULL DEFAULT '',
+                    comment            TEXT         NOT NULL DEFAULT '',
+                    err_info           TEXT         NOT NULL DEFAULT '',
+                    drops              BIGINT       NOT NULL DEFAULT 0,
+                    scrambles          BIGINT       NOT NULL DEFAULT 0,
+                    rec_status         BIGINT       NOT NULL DEFAULT 0,
+                    protect_flag       BIGINT       NOT NULL DEFAULT 0,
+                    original_file_path TEXT         NOT NULL DEFAULT '',
+                    saved_at           VARCHAR(50)  NOT NULL DEFAULT ''
+                ) CHARACTER SET utf8mb4";
             create.ExecuteNonQuery();
 
             // 既存テーブルへのカラム追加（既存なら無視）
             foreach (var col in (string[])[
-                "start_time_epg TEXT NOT NULL DEFAULT ''",
+                "start_time_epg VARCHAR(50) NOT NULL DEFAULT ''",
                 "rec_id BIGINT NOT NULL DEFAULT 0",
                 "onid BIGINT NOT NULL DEFAULT 0",
                 "tsid BIGINT NOT NULL DEFAULT 0",
@@ -94,7 +93,7 @@ public sealed class RecordingIndex : IDisposable
                 try
                 {
                     using var alter = conn.CreateCommand();
-                    alter.CommandText = $"ALTER TABLE recordings ADD COLUMN IF NOT EXISTS {col}";
+                    alter.CommandText = $"ALTER TABLE recordings ADD COLUMN {col}";
                     alter.ExecuteNonQuery();
                 }
                 catch { }
@@ -122,7 +121,7 @@ public sealed class RecordingIndex : IDisposable
                  original_file_path, saved_at)
                 VALUES (@fn,@ft,@st,@ep,@dt,@dte,@dur,@svc,@rid,@onid,@tsid,@sid,@eid,
                         @pi,@cmt,@err,@drops,@scr,@rs,@pf,@fp,@sa)
-                ON CONFLICT (file_name) DO UPDATE SET
+                ON DUPLICATE KEY UPDATE
                     full_title         = @ft,
                     series_title       = @st,
                     episode_number     = @ep,
@@ -186,7 +185,7 @@ public sealed class RecordingIndex : IDisposable
         }
     }
 
-    private static RecordingIndexEntry ReadEntry(NpgsqlDataReader r)
+    private static RecordingIndexEntry ReadEntry(MySqlDataReader r)
     {
         int Ord(string col) => r.GetOrdinal(col);
         static DateTime ParseDt(string s) => string.IsNullOrEmpty(s) ? default : DateTime.Parse(s);

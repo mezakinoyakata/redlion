@@ -13,7 +13,7 @@ EDCB（EpgTimerSrv）と連携する Windows WPF アプリケーション。
 |---|---|
 | 場所 | `C:\work\CC\EDCBViewer` |
 | フレームワーク | .NET 9.0 / WPF / Windows |
-| 依存パッケージ | Npgsql 9.0.3 |
+| 依存パッケージ | MySqlConnector 2.4.0 |
 | ビルド | `dotnet build -c Release`（`dotnet publish` は使わない、`-c Release` 必須） |
 
 ---
@@ -103,7 +103,7 @@ EpgData.db の events テーブルを ONID/TSID/SID/EventID で検索
 ## SQLiteデータベース
 
 ### PostgreSQL DB（録画サーバー上）
-- 接続: `DbConnectionString` 設定（例: `Host=5600x;Database=edcbviewer;Username=edcb;Password=pass`）
+- 接続: `DbConnectionString` 設定（例: `Server=5600x;Database=edcbviewer;Uid=edcb;Pwd=pass`）
 - **recordings テーブル** — 管理クラス: `Services/RecordingIndex.cs`、EDCBViewer が read/write
 - **events テーブル** — 管理クラス: `Services/EpgDbReader.cs`、EDCBViewer は read-only
   - EpgTimerSrv 側（EpgSqliteExporter）が PostgreSQL に書き出す必要あり（別途対応）

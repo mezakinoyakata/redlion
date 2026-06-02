@@ -1,4 +1,4 @@
-using Npgsql;
+using MySqlConnector;
 
 namespace EDCBViewer.Services;
 
@@ -15,7 +15,7 @@ public sealed class EpgDbReader
         if (!IsConfigured) return null;
         try
         {
-            using var conn = new NpgsqlConnection(_connStr);
+            using var conn = new MySqlConnection(_connStr);
             conn.Open();
             using var cmd = conn.CreateCommand();
             cmd.CommandText =
