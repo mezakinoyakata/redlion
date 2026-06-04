@@ -5,7 +5,7 @@
 ## 動作環境
 
 - .NET 9 Desktop Runtime（Windows）
-- EDCB（EpgTimerSrv）が稼働している録画機
+- [mezakinoyakata/EDCB](https://github.com/mezakinoyakata/EDCB)（[xtne6f/EDCB](https://github.com/xtne6f/EDCB) fork）が稼働している録画機
 - MySQL サーバー（録画インデックス・EPG DB 共用）
 - 録画機との SMB 共有（UNC パスでアクセス）
 - MPC-BE（外部プレイヤー）
