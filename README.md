@@ -5,43 +5,56 @@
 ## 動作環境
 
 - .NET 9 Desktop Runtime（Windows）
+- EDCB（EpgTimerSrv）が稼働している録画機
+- MySQL サーバー（録画インデックス・EPG DB 共用）
 - 録画機との SMB 共有（UNC パスでアクセス）
 - MPC-BE（外部プレイヤー）
 
 ## 機能
 
-- **録画済み一覧**（RecInfo.txt を読み込み）
+- **録画済み一覧**（MySQL `recordings` テーブルから取得）
   - 番組名・放送局・日時・録画時間・ドロップ数・ステータスを表示
-  - 行をダブルクリック、または選択して再生ボタンで MPC-BE 起動
-- **予約一覧**（Reserve.txt を読み込み）
+  - 番組情報をキャッシュ・EPG DB から取得して右ペインに表示
+  - ダブルクリックまたは再生ボタンで MPC-BE 起動
+  - タイトル・放送局・番組情報・日付によるフィルタ検索（正規表現対応）
+  - 列クリックでソート、ページング対応
+- **予約一覧**（EMWUI API から取得）
   - 番組名・放送局・日時・ステータスを表示
-  - ダブルクリックで対応する録画ファイルを MPC-BE で再生
+  - ダブルクリックで対応する録画ファイルを再生
   - 録画中の番組は追っかけ再生を試みる
-- 定期自動更新（デフォルト 60 秒間隔）
-- 設定ダイアログでパスを変更可能
+- **ディレクトリタブ**
+  - 指定フォルダ内の `.ts` / `.m2ts` / `.mp4` を閲覧・再生
+  - MySQL `recordings` テーブルと照合して番組情報・ドロップ数を表示
 
 ## セットアップ
 
-1. リリースの zip を展開して `EDCBViewer.exe` を起動
-2. ツールバーの「設定」ボタンで以下を設定
-   | 項目 | 説明 |
-   |------|------|
-   | RecInfo.txt パス | 例: `\\録画機\c\ap\edcb\Setting\RecInfo.txt` |
-   | Reserve.txt パス | 例: `\\録画機\c\ap\edcb\Setting\Reserve.txt` |
-   | 録画フォルダ | 例: `\\録画機\d\PT2`（追っかけ再生用） |
-   | MPC-BE パス | 例: `C:\ap\MPC-BE.1.8.1.x64\mpc-be64.exe` |
+1. `dotnet build -c Release` でビルドし `bin\Release\net9.0-windows\` を配置
+2. `EDCBViewer.exe` を起動
+3. メニューの「設定」で以下を設定
 
-設定は `settings.json`（exe と同じフォルダ）に保存されます。
+| 項目 | 説明 |
+|------|------|
+| EMWUI URL | 例: `http://5600x:5510` |
+| MySQL 接続文字列 | 例: `Server=5600x;Database=edcbviewer;Uid=edcb;Pwd=xxx` |
+| 録画フォルダ | 例: `\\5600x\d\PT2`（追っかけ再生用） |
+| MPC-BE パス | 例: `C:\ap\MPC-BE.1.8.1.x64\mpc-be64.exe` |
+| エンコード済みフォルダ | ディレクトリタブの起点フォルダ |
 
-## 注意
-
-- Reserve.txt には**絶対に書き込みません**（読み取り専用）
-- ファイルは最小限の時間だけ開き、EpgTimerSrv の書き込みを妨げないよう設計しています
+設定は `%LOCALAPPDATA%\EDCBViewer\settings.json` に保存されます。
 
 ## ビルド
 
 ```
-dotnet publish -c Release -r win-x64 --self-contained false
+dotnet build -c Release
 ```
 
-出力先: `publish\`（プロジェクトルート直下、csproj の `<PublishDir>` で固定）
+## キーボードショートカット
+
+| キー | 動作 |
+|------|------|
+| F5 | 更新 |
+| Ctrl+1 / 2 / 3 | 録画済み / 予約録画 / ディレクトリ タブ切替 |
+| PageDown / PageUp | 次/前ページ |
+| Home / End | 先頭/末尾ページ |
+| Enter | ファイル再生 / フォルダ移動 |
+| ↑ / ↓ | 選択移動 |
