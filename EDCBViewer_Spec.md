@@ -48,8 +48,6 @@ EDCBViewer/
 | プロパティ | 説明 | デフォルト |
 |---|---|---|
 | EmwuiBaseUrl | EpgTimerSrv の EMWUI URL（予約一覧・番組情報フォールバック用） | `""` |
-| RecInfoTxtPath | RecInfo.txt のパス　例: `\\録画機\c\ap\edcb\Setting\RecInfo.txt` | `""` |
-| ReserveTxtPath | Reserve.txt のパス（読み取り専用）　例: `\\録画機\c\ap\edcb\Setting\Reserve.txt` | `""` |
 | MaxRecItems | 録画済み一覧のページサイズ（ディレクトリタブのページサイズも兼用） | 500 |
 | RecordingFolder | 録画フォルダ（追っかけ再生時のファイル探索用） | `\\5600x\d\PT2` |
 | PlayerPath | 動画プレイヤーのパス | MPC-BE のパス |
