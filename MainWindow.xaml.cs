@@ -272,6 +272,13 @@ public partial class MainWindow : Window
         DirList.Focus();
     }
 
+    private void DirList_SizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        if (DirList.View is not GridView gv) return;
+        var fixed_ = gv.Columns.Skip(1).Sum(c => c.ActualWidth);
+        gv.Columns[0].Width = Math.Max(100, DirList.ActualWidth - fixed_ - 22);
+    }
+
     private void DirRefresh_Click(object sender, RoutedEventArgs e) => LoadMediaFiles();
 
     private void DirList_SelectionChanged(object sender, SelectionChangedEventArgs e)

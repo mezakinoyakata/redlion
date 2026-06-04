@@ -190,10 +190,11 @@
                 <ListView x:Name="DirList" Grid.Row="3"
                           SelectionChanged="DirList_SelectionChanged"
                           MouseDoubleClick="DirList_DoubleClick"
-                          GridViewColumnHeader.Click="DirList_ColumnHeaderClick">
+                          GridViewColumnHeader.Click="DirList_ColumnHeaderClick"
+                          SizeChanged="DirList_SizeChanged">
                     <ListView.View>
                         <GridView>
-                            <GridViewColumn Header="ファイル名" Width="420"
+                            <GridViewColumn Header="ファイル名" Width="400"
                                 DisplayMemberBinding="{Binding DisplayName}"/>
                             <GridViewColumn Header="放送局" Width="90"
                                 DisplayMemberBinding="{Binding ParsedStation}"/>
