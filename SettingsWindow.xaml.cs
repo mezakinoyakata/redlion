@@ -12,17 +12,12 @@ public partial class SettingsWindow : Window
         InitializeComponent();
         Settings = new AppSettings
         {
-            EmwuiBaseUrl       = current.EmwuiBaseUrl,
             MaxRecItems        = current.MaxRecItems,
-            RecordingFolder    = current.RecordingFolder,
             PlayerPath         = current.PlayerPath,
-            RefreshIntervalSeconds = current.RefreshIntervalSeconds,
             EncodedFolder      = current.EncodedFolder,
             DbConnectionString = current.DbConnectionString,
         };
-        EmwuiUrlBox.Text           = Settings.EmwuiBaseUrl;
         MaxRecItemsBox.Text        = Settings.MaxRecItems.ToString();
-        RecFolderBox.Text          = Settings.RecordingFolder;
         PlayerPathBox.Text         = Settings.PlayerPath;
         EncodedFolderBox.Text      = Settings.EncodedFolder;
         DbConnectionStringBox.Text = Settings.DbConnectionString;
@@ -30,10 +25,8 @@ public partial class SettingsWindow : Window
 
     private void Save_Click(object sender, RoutedEventArgs e)
     {
-        Settings.EmwuiBaseUrl    = EmwuiUrlBox.Text.Trim();
         if (int.TryParse(MaxRecItemsBox.Text.Trim(), out var n) && n > 0)
             Settings.MaxRecItems = n;
-        Settings.RecordingFolder    = RecFolderBox.Text.Trim();
         Settings.PlayerPath         = PlayerPathBox.Text.Trim();
         Settings.EncodedFolder      = EncodedFolderBox.Text.Trim();
         Settings.DbConnectionString = DbConnectionStringBox.Text.Trim();
@@ -51,7 +44,7 @@ public partial class SettingsWindow : Window
     {
         var dlg = new OpenFileDialog
         {
-            Title = "MPC-BE を選択",
+            Title = "プレイヤーを選択",
             Filter = "実行ファイル (*.exe)|*.exe|すべてのファイル (*.*)|*.*",
             FileName = PlayerPathBox.Text
         };
@@ -63,7 +56,7 @@ public partial class SettingsWindow : Window
     {
         var dlg = new Microsoft.Win32.OpenFolderDialog
         {
-            Title = "エンコード済みフォルダを選択",
+            Title = "フォルダを選択",
             InitialDirectory = EncodedFolderBox.Text,
         };
         if (dlg.ShowDialog() == true)
