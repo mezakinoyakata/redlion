@@ -40,6 +40,9 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
         _recordingIndex = new RecordingIndexService(_settings.DbConnectionString);
+        var root = _settings.EncodedFolder.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        _dirRoot = root;
+        _currentDirPath = root;
         InitSortHeaders();
         _recordingIndex.Load();
         Loaded += (_, _) => LoadMediaFiles();
