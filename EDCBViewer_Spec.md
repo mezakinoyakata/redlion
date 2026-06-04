@@ -33,10 +33,7 @@ EDCBViewer/
 │   └── RecordingIndexEntry.cs 録画インデックスエントリ
 ├── Parsers/
 │   ├── EmwuiClient.cs         EMWUI HTTP API クライアント（予約一覧・番組情報取得）
-│   ├── EpgBinaryParser.cs     *_epg.dat バイナリパーサー（未使用・削除候補）
-│   ├── EncodingDetector.cs    文字コード検出
-│   ├── RecInfoParser.cs       RecInfo.txt パーサー（未使用・削除候補）
-│   └── ReserveParser.cs       Reserve.txt パーサー（未使用・削除候補）
+│   └── EncodingDetector.cs    文字コード検出
 └── Services/
     ├── EpgDbReader.cs         MySQL EPG DB 読み取り（MySqlConnector）
     └── RecordingIndex.cs      MySQL 録画インデックス DB 管理（MySqlConnector）
@@ -51,6 +48,8 @@ EDCBViewer/
 | プロパティ | 説明 | デフォルト |
 |---|---|---|
 | EmwuiBaseUrl | EpgTimerSrv の EMWUI URL（予約一覧・番組情報フォールバック用） | `""` |
+| RecInfoTxtPath | RecInfo.txt のパス　例: `\\録画機\c\ap\edcb\Setting\RecInfo.txt` | `""` |
+| ReserveTxtPath | Reserve.txt のパス（読み取り専用）　例: `\\録画機\c\ap\edcb\Setting\Reserve.txt` | `""` |
 | MaxRecItems | 録画済み一覧のページサイズ（ディレクトリタブのページサイズも兼用） | 500 |
 | RecordingFolder | 録画フォルダ（追っかけ再生時のファイル探索用） | `\\5600x\d\PT2` |
 | PlayerPath | 動画プレイヤーのパス | MPC-BE のパス |
