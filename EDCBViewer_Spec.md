@@ -132,10 +132,12 @@ EmwuiBaseUrl 未設定の場合 → 予約一覧は空
 
 ## MySQLデータベース（録画インデックス）
 
+> **EDCBViewer は MySQL に書き込まない。** `recordings` テーブルへの書き込みは EpgTimerSrv（EDCB）が行う。EDCBViewer は SELECT のみ。
+
 - 接続: `AppSettings.DbConnectionString`（EPG DB と同一の MySQL サーバー・同一接続文字列）
 - 管理クラス: `Services/RecordingIndex.cs`
-- テーブル: `recordings`
-- 未設定（`DbConnectionString` が空）の場合は全操作をスキップ
+- テーブル: `recordings`（EpgTimerSrv が書き込む。EDCBViewer は読み取り専用）
+- 未設定（`DbConnectionString` が空）の場合は全 SELECT をスキップ
 
 ### recordings テーブルの主なカラム
 
@@ -158,13 +160,14 @@ EmwuiBaseUrl 未設定の場合 → 予約一覧は空
 | `original_file_path` | VARCHAR | フルパス（`RecFilePath`） |
 | `saved_at` | DATETIME | インデックス登録日時 |
 
-### 主なメソッド
+### 主なメソッド（SELECT のみ）
 
 - `LoadAll()`: `recordings` テーブル全件を `List<RecFileInfo>` として返す（録画一覧表示用）
 - `Find(fileName)`: `file_name` でレコードを検索し `RecordingIndexEntry` を返す（ディレクトリタブで使用）
 - `FindPathByRecId(recId)`: `rec_id` から `original_file_path` を返す
 - `ParseTitle(title)`: タイトルからシリーズ名と話数を抽出（`#N`・`第N話`・`第N回`・`（N）`・末尾数字に対応）
-- `AddOrUpdate(rec, programInfo)`: `file_name` をキーに UPSERT（現在は呼び出し元なし・削除候補）
+
+> `AddOrUpdate()` メソッドはコード上に残存しているが呼び出し元なし。EDCBViewer からの DB 書き込みは設計違反のため削除予定。
 
 ---
 
@@ -180,9 +183,7 @@ EmwuiBaseUrl 未設定の場合 → 予約一覧は空
 #### GetEventInfoText
 `(onid, tsid, sid, event_id)` で `events` テーブルを PK 検索し `short_text + ext_text` を返す。
 
-#### SyncCacheToDbAsync（現在呼び出し元なし・削除候補）
-`events` テーブルへの番組情報書き込み。INSERT 時 `short_text=''`・`ext_text=番組情報全文`。  
-ON DUPLICATE KEY UPDATE では既存テキストを上書きしない。
+> `SyncCacheToDbAsync()` メソッドはコード上に残存しているが呼び出し元なし。`events` テーブルへの書き込みは EpgTimerSrv が行うため EDCBViewer からは不要。削除予定。
 
 ### 書き込み側（EpgTimerSrv）
 
