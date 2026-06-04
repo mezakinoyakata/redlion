@@ -6,6 +6,7 @@ using System.Windows.Input;
 using EDCBViewer.Models;
 using EDCBViewer.Services;
 using RecordingIndexService = EDCBViewer.Services.RecordingIndex;
+using EpgDbReaderService = EDCBViewer.Services.EpgDbReader;
 
 namespace EDCBViewer;
 
@@ -319,10 +320,17 @@ public partial class MainWindow : Window
         var errSuffix = string.IsNullOrWhiteSpace(entry.Comment) ? "" : $"  [{entry.Comment.Trim()}]";
         DirDrops.Text = $"ドロップ: {entry.Drops}  スクランブル: {entry.Scrambles}{errSuffix}";
 
-        var hasInfo = !string.IsNullOrEmpty(entry.ProgramInfo);
+        // 番組情報は events テーブルから取得（EpgTimerSrv が常時更新）
+        var progInfo = entry.EventID != 0
+            ? new EpgDbReaderService(_settings.DbConnectionString).GetEventInfoText(
+                entry.OriginalNetworkID, entry.TransportStreamID, entry.ServiceID, entry.EventID)
+              ?? entry.ProgramInfo
+            : entry.ProgramInfo;
+
+        var hasInfo = !string.IsNullOrEmpty(progInfo);
         DirProgramInfoLabel.Visibility = hasInfo ? Visibility.Visible : Visibility.Collapsed;
         DirProgramInfo.Visibility = DirProgramInfoLabel.Visibility;
-        DirProgramInfo.Text = entry.ProgramInfo;
+        DirProgramInfo.Text = progInfo;
     }
 
     private void DirList_DoubleClick(object sender, MouseButtonEventArgs e)
