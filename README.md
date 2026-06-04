@@ -34,10 +34,10 @@
 
 | 項目 | 説明 |
 |------|------|
-| EMWUI URL | 例: `http://5600x:5510` |
-| MySQL 接続文字列 | 例: `Server=5600x;Database=edcbviewer;Uid=edcb;Pwd=xxx` |
-| 録画フォルダ | 例: `\\5600x\d\PT2`（追っかけ再生用） |
-| MPC-BE パス | 例: `C:\ap\MPC-BE.1.8.1.x64\mpc-be64.exe` |
+| EMWUI URL | 例: `http://recserver:5510` |
+| MySQL 接続文字列 | 例: `Server=recserver;Database=edcbviewer;Uid=edcb;Pwd=xxx` |
+| 録画フォルダ | 例: `\\recserver\d\PT2`（追っかけ再生用） |
+| MPC-BE パス | 例: `C:\app\MPC-BE\mpc-be64.exe` |
 | エンコード済みフォルダ | ディレクトリタブの起点フォルダ |
 
 設定は `%LOCALAPPDATA%\EDCBViewer\settings.json` に保存されます。
