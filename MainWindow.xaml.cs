@@ -17,7 +17,6 @@ namespace EDCBViewer;
 public partial class MainWindow : Window
 {
     private AppSettings _settings = AppSettings.Load();
-    private PlayServer? _playServer;
     private RecFileInfo? _selectedRec;
     private List<RecFileInfo> _recList = [];    // 現在ページ分
     private List<RecFileInfo> _allRecList = []; // 検索用全件（バックグラウンド取得）
@@ -52,7 +51,6 @@ public partial class MainWindow : Window
 
     // 全件ページモード（ソート or 検索 → _allRecList ベースのページング）
     private bool _isAllRecPagedMode = false;  // 全件ページモード中
-    private bool _sortModePending   = false;  // 全件未取得時の全件ページモード予約
     private int  _allRecPagedPage   = 0;      // 全件ページモード内の現在ページ
     private List<RecFileInfo> _pagedAllRec = []; // フィルタ+ソート済みスナップショット
     private int AllRecPagedTotalPages => _pagedAllRec.Count <= 0 ? 1
@@ -93,11 +91,8 @@ public partial class MainWindow : Window
         InitializeComponent();
         _recordingIndex = new RecordingIndexService(_settings.DbConnectionString);
         InitSortHeaders();
-        StartPlayServer();
         _recordingIndex.Load();
-        // 自動リロードは重いため無効化。手動更新（メニュー「更新」）のみ。
         Loaded += (_, _) => Reload();
-        Closed += (_, _) => _playServer?.Stop();
     }
 
     /// <summary>列ヘッダーの元テキストを記録する（ソートインジケータのリセット用）</summary>
@@ -119,9 +114,7 @@ public partial class MainWindow : Window
     private bool _isLoading;
     private int  _recTotal;                           // サーバー上の全録画件数
     private int  _currentPage;                        // 現在のページ（0始まり）
-    private CancellationTokenSource _epgCts    = new(); // 右ペイン番組情報取得
-    private CancellationTokenSource _bgCts     = new(); // バックグラウンド全文取得（現ページ）
-    private CancellationTokenSource _allRecCts = new(); // 全件検索リスト取得
+    private CancellationTokenSource _allRecCts = new();
 
     // 全文検索用キャッシュ: ID → programInfo テキスト
     // _recList と _allRecList は別オブジェクトのため共有辞書で橋渡し。
@@ -190,19 +183,18 @@ public partial class MainWindow : Window
 
     private async void Reload(bool resetPage = true)
     {
-        if (_isLoading) return;                         // 連打ガード
-        if (string.IsNullOrWhiteSpace(_settings.EmwuiBaseUrl))
-        {
-            StatusText.Text = "EMWUI URL が未設定です。設定 → パス設定... で URL を入力してください。";
-            return;
-        }
+        if (_isLoading) return;
+        try { await ReloadCore(resetPage); }
+        finally { _isLoading = false; RefreshMenuItem.IsEnabled = true; }
+    }
 
+    private async Task ReloadCore(bool resetPage)
+    {
         if (resetPage) _currentPage = 0;
         // キャッシュはリロード時もクリアしない（ディスク永続化のため蓄積し続ける）
 
         // 全件ページモード / ソートをリセット（列ヘッダーのインジケータも消す）
         _isAllRecPagedMode = false;
-        _sortModePending   = false;
         _allRecPagedPage   = 0;
         _pagedAllRec       = [];
         if (_recActiveSortCol != null && _recOrigHeaders.TryGetValue(_recActiveSortCol, out var sortHeaderOrig))
@@ -221,25 +213,35 @@ public partial class MainWindow : Window
         StatusText.Text = "読み込み中...";
 
         List<RecFileInfo> recList = [];
+        List<RecFileInfo> allFromMysql = [];
         List<ReserveData> resList = [];
         string? recErr = null, resErr = null;
         int recTotal = 0;
 
-        var client = new EmwuiClient(_settings.EmwuiBaseUrl);
-        var pageSize = PageSize;
+        var pageSize  = PageSize;
         var pageIndex = _currentPage * pageSize;
 
-        // 録画済み・予約を並列取得（Task.Run 不要: HttpClient は元からスレッドセーフ非同期）
-        var recTask = client.GetRecFileInfoAsync(pageSize, pageIndex);
-        var resTask = client.GetReserveInfoAsync();
+        // 録画済み: MySQL recordings テーブルから全件取得
+        if (_recordingIndex.IsConfigured)
+        {
+            try
+            {
+                allFromMysql = await Task.Run(() => _recordingIndex.LoadAll());
+                recTotal = allFromMysql.Count;
+                recList  = allFromMysql.Skip(pageIndex).Take(pageSize).ToList();
+            }
+            catch (Exception ex) { recErr = ex.Message; }
+        }
 
-        try { (recList, recTotal) = await recTask; }
-        catch (Exception ex) { recErr = ex.Message; }
+        // 予約: EMWUI から取得
+        if (!string.IsNullOrWhiteSpace(_settings.EmwuiBaseUrl))
+        {
+            var resClient = new EmwuiClient(_settings.EmwuiBaseUrl);
+            try { resList = await resClient.GetReserveInfoAsync(); }
+            catch (Exception ex) { resErr = ex.Message; }
+        }
 
-        try { resList = await resTask; }
-        catch (Exception ex) { resErr = ex.Message; }
-
-        // 録画済みは新→旧順（念のためソート）
+        // 録画済みは新→旧順（MySQL は ORDER BY start_time DESC 済みだが念のため）
         recList.Sort((a, b) => b.StartTime.CompareTo(a.StartTime));
 
         // リスト更新前に選択中 ID を退避（更新後に復元）
@@ -292,194 +294,18 @@ public partial class MainWindow : Window
 
         if (recErr == null)
         {
-            // インデックスに基本情報を登録（番組情報はバックグラウンドで後から補完）
-            foreach (var rec in recList)
-            {
-                _programInfoCache.TryGetValue(rec.ID, out var cached);
-                _recordingIndex.AddOrUpdate(rec, cached ?? rec.ProgramInfo);
-            }
-            _recordingIndex.Save();
-
-            // ① 現ページの番組情報をバックグラウンドで取得（全文検索・右ペインキャッシュ用）
-            _bgCts.Cancel();
-            _bgCts = new CancellationTokenSource();
-            _ = BackgroundFetchProgramInfoAsync(_recList, client, _bgCts.Token);
-
-            // ② 全件の基本情報を取得して検索用リストを構築
             _allRecCts.Cancel();
             _allRecCts = new CancellationTokenSource();
-            _allRecList  = [];
+
+            // 全件取得済み。programInfo もロード済みなのでキャッシュに登録するだけ。
+            _allRecList  = allFromMysql;
             _pagedAllRec = [];
-            _ = LoadAllRecInfoAsync(client, _allRecCts.Token);
+            foreach (var rec in allFromMysql)
+                if (!string.IsNullOrEmpty(rec.ProgramInfo))
+                    _programInfoCache.TryAdd(rec.ID, rec.ProgramInfo);
         }
     }
 
-    /// <summary>
-    /// 検索用に全件の基本情報を取得する（programInfo は空のまま）。
-    /// 完了後、検索ボックスに文字が入っていれば自動的に検索ビューへ切り替える。
-    /// </summary>
-    private async Task LoadAllRecInfoAsync(EmwuiClient client, CancellationToken ct)
-    {
-        try
-        {
-            var (all, _) = await client.GetRecFileInfoAsync(65535, 0);
-            if (ct.IsCancellationRequested) return;
-            all.Sort((a, b) => b.StartTime.CompareTo(a.StartTime));
-
-            await Dispatcher.InvokeAsync(() =>
-            {
-                if (ct.IsCancellationRequested) return;
-                _allRecList = all;
-
-                // 検索中 or ソートが保留中なら全件ページモードへ切り替え
-                if (!string.IsNullOrEmpty(RecSearchBox.Text) || _sortModePending)
-                {
-                    _sortModePending = false;
-                    _allRecPagedPage = 0;
-                    EnterAllRecPagedMode();
-                }
-            });
-
-            // _allRecList の全件番組情報を並列でバックグラウンド取得。
-            // _recList で先行キャッシュ済みの分は ContainsKey でスキップ。
-            if (!ct.IsCancellationRequested)
-                _ = BackgroundFetchProgramInfoAsync(all, client, ct);
-
-            // キャッシュ済みの番組情報を MySQL に書き込む（INSERT IGNORE: 既存行は上書きしない）
-            if (!ct.IsCancellationRequested)
-                _ = new EpgDbReader(_settings.DbConnectionString)
-                        .SyncCacheToDbAsync(all, _programInfoCache);
-        }
-        catch (OperationCanceledException) { }
-        catch { /* 全件取得失敗は無視（ページ検索で代替） */ }
-    }
-
-
-    /// <summary>
-    /// 録画一覧の番組情報（programInfo）をバックグラウンドで取得する。
-    /// stopOnEmpty=true の場合は新しい順に逐次取得し、番組情報が空のアイテムに当たった時点で中断。
-    /// stopOnEmpty=false の場合は 8並列で全件取得。
-    /// </summary>
-    private async Task BackgroundFetchProgramInfoAsync(
-        List<RecFileInfo> items, EmwuiClient client, CancellationToken ct,
-        bool stopOnEmpty = false)
-    {
-        if (stopOnEmpty)
-        {
-            // 新しい順（items はソート済み）に逐次取得。番組情報なし → 以降中断。
-            int seqDone = 0;
-            var seqEpgDb = new EpgDbReader(_settings.DbConnectionString);
-            foreach (var item in items)
-            {
-                if (ct.IsCancellationRequested) break;
-                if (_programInfoCache.ContainsKey(item.ID)) continue;
-                try
-                {
-                    string? text = null;
-                    if (item.EventID != 0)
-                        text = seqEpgDb.GetEventInfoText(item.OriginalNetworkID, item.TransportStreamID, item.ServiceID, item.EventID);
-                    if (string.IsNullOrEmpty(text))
-                    {
-                        text = await client.GetProgramInfoTextAsync(item.ID, ct);
-                        if (string.IsNullOrEmpty(text)) break; // 番組情報なし → 中断
-                    }
-                    item.ProgramInfo = text;
-                    _programInfoCache[item.ID] = text;
-                    _recordingIndex.AddOrUpdate(item, text);
-                    seqDone++;
-                    if (seqDone % 10 == 0)
-                    {
-                        await Dispatcher.InvokeAsync(() =>
-                        {
-                            if (ct.IsCancellationRequested) return;
-                            StatusText.Text = $"番組情報取得中... {seqDone}";
-                            if (!string.IsNullOrEmpty(RecSearchBox.Text))
-                            {
-                                if (_isAllRecPagedMode) EnterAllRecPagedMode();
-                                else _recView?.Refresh();
-                            }
-                        });
-                    }
-                }
-                catch (OperationCanceledException) { break; }
-                catch { break; }
-            }
-            if (!ct.IsCancellationRequested)
-                await Dispatcher.InvokeAsync(() =>
-                {
-                    StatusText.Text = "全文検索可";
-                    if (!string.IsNullOrEmpty(RecSearchBox.Text) && _isAllRecPagedMode)
-                        EnterAllRecPagedMode();
-                    else
-                        _recView?.Refresh();
-                });
-            return;
-        }
-
-        const int concurrency = 8;
-        var sem = new SemaphoreSlim(concurrency);
-        int done = 0;
-        int total = items.Count;
-        var epgDb = new EpgDbReader(_settings.DbConnectionString);
-
-        var tasks = items.Select(async item =>
-        {
-            await sem.WaitAsync(ct);
-            try
-            {
-                // ContainsKey で確認: 既キャッシュ済みの ID は再フェッチしない（空結果も記録して再取得を防ぐ）
-                if (!_programInfoCache.ContainsKey(item.ID) && !ct.IsCancellationRequested)
-                {
-                    string? text = null;
-                    if (item.EventID != 0)
-                        text = epgDb.GetEventInfoText(item.OriginalNetworkID, item.TransportStreamID, item.ServiceID, item.EventID);
-                    if (string.IsNullOrEmpty(text))
-                        text = await client.GetProgramInfoTextAsync(item.ID, ct);
-                    item.ProgramInfo = text ?? "";
-                    _programInfoCache[item.ID] = text ?? ""; // 空でも ID を記録
-                    if (!string.IsNullOrEmpty(text))
-                        _recordingIndex.AddOrUpdate(item, text);
-                }
-
-                int n = Interlocked.Increment(ref done);
-                if (n % 10 == 0 || n == total)
-                {
-                    await Dispatcher.InvokeAsync(() =>
-                    {
-                        if (ct.IsCancellationRequested) return;
-                        StatusText.Text = n < total
-                            ? $"番組情報取得中... {n}/{total}"
-                            : "全文検索可";
-                        // 検索中なら随時フィルター再評価
-                        if (!string.IsNullOrEmpty(RecSearchBox.Text))
-                        {
-                            if (_isAllRecPagedMode)
-                                EnterAllRecPagedMode();
-                            else
-                                _recView?.Refresh();
-                        }
-                    });
-                }
-            }
-            catch (OperationCanceledException) { }
-            finally { sem.Release(); }
-        });
-
-        await Task.WhenAll(tasks);
-
-        if (!ct.IsCancellationRequested)
-            await Dispatcher.InvokeAsync(() =>
-            {
-                if (!string.IsNullOrEmpty(RecSearchBox.Text) && _isAllRecPagedMode)
-                    EnterAllRecPagedMode();
-                else
-                    _recView?.Refresh();
-            });
-
-        // 取得完了後にキャッシュとインデックスをディスクへ保存
-        SaveProgInfoCache();
-        _recordingIndex.Save();
-    }
 
     private void UpdatePageControls()
     {
@@ -754,23 +580,8 @@ public partial class MainWindow : Window
         ApplySort(col, prop, ref _recActiveSortCol, ref _recSortProp, ref _recSortAsc,
                   _recOrigHeaders, null);
 
-        if (_allRecList.Count > 0)
-        {
-            // 全件取得済み → フィルタ+ソートして全件ページモードへ
-            _sortModePending = false;
-            _allRecPagedPage = 0;
-            EnterAllRecPagedMode();
-        }
-        else
-        {
-            // 全件未取得 → ページビューのみ並べ替え、取得後に全件ページモードへ切り替え
-            _recView?.SortDescriptions.Clear();
-            if (_recSortProp != null)
-                _recView?.SortDescriptions.Add(new SortDescription(_recSortProp,
-                    _recSortAsc ? ListSortDirection.Ascending : ListSortDirection.Descending));
-            _sortModePending = true;
-            StatusText.Text = "全件データ読み込み後に全件ソートを適用します...";
-        }
+        _allRecPagedPage = 0;
+        EnterAllRecPagedMode();
     }
 
     /// <summary>
@@ -992,13 +803,8 @@ public partial class MainWindow : Window
 
     // ─── 録画済み選択 / ダブルクリック ──────────────────────────────────────
 
-    private async void RecInfoList_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    private void RecInfoList_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        // 前の番組情報取得をキャンセル
-        _epgCts.Cancel();
-        _epgCts = new CancellationTokenSource();
-        var ct = _epgCts.Token;
-
         if (RecInfoList.SelectedItem is not RecFileInfo info)
         {
             ClearRecPanel();
@@ -1014,7 +820,7 @@ public partial class MainWindow : Window
         RecDrops.Text    = $"ドロップ: {info.Drops}  スクランブル: {info.Scrambles}{errSuffix}";
         PlayButton.Visibility = Visibility.Visible;
 
-        // ── 番組情報: キャッシュ済みなら即表示、なければ EpgData.db → EMWUI の順で取得 ──
+        // ── 番組情報: MySQL program_info → EpgDB events テーブルの順で取得 ──
         if (_programInfoCache.TryGetValue(info.ID, out var cached) && !string.IsNullOrEmpty(cached))
         {
             ShowProgramInfo(cached);
@@ -1026,37 +832,19 @@ public partial class MainWindow : Window
             return;
         }
 
-        // EpgData.db から取得
         if (info.EventID != 0)
         {
             var epgText = new EpgDbReader(_settings.DbConnectionString).GetEventInfoText(
                 info.OriginalNetworkID, info.TransportStreamID, info.ServiceID, info.EventID);
             if (!string.IsNullOrEmpty(epgText))
             {
-                info.ProgramInfo = epgText;
                 _programInfoCache[info.ID] = epgText;
-                _recordingIndex.AddOrUpdate(info, epgText);
                 ShowProgramInfo(epgText);
                 return;
             }
         }
 
-        if (string.IsNullOrWhiteSpace(_settings.EmwuiBaseUrl)) return;
-
-        // EMWUI フォールバック（EpgData.db にない古い録画など）
-        RecProgramInfoLabel.Visibility = Visibility.Visible;
-        RecProgramInfo.Visibility      = Visibility.Visible;
-        RecProgramInfo.Text            = "番組情報取得中...";
-
-        var progText = await new EmwuiClient(_settings.EmwuiBaseUrl)
-            .GetProgramInfoTextAsync(info.ID, ct);
-
-        if (ct.IsCancellationRequested) return;
-
-        info.ProgramInfo = progText;
-        if (!string.IsNullOrEmpty(progText))
-            _programInfoCache[info.ID] = progText;
-        ShowProgramInfo(progText);
+        ShowProgramInfo("");
     }
 
     private void ShowProgramInfo(string text)
@@ -1177,7 +965,6 @@ public partial class MainWindow : Window
 
     private void ClearRecPanel()
     {
-        _epgCts.Cancel();
         _selectedRec = null;
         RecTitle.Text = "";
         RecService.Text = "";
@@ -1322,8 +1109,8 @@ public partial class MainWindow : Window
                     .OrderBy(d => d.DisplayName)
                     .ToList();
 
-                var files = new DirectoryInfo(folder)
-                    .EnumerateFiles("*.mp4")
+                var files = new[] { "*.ts", "*.m2ts", "*.mp4" }
+                    .SelectMany(pat => new DirectoryInfo(folder).EnumerateFiles(pat))
                     .Select(fi => new MediaFile
                     {
                         FilePath = fi.FullName,
@@ -1489,8 +1276,9 @@ public partial class MainWindow : Window
 
         DirPlayButton.Visibility = Visibility.Visible;
 
-        // パース済みタイトル（局名・日時を除いた部分）でインデックス検索
-        var entry = _recordingIndex.Find(file.FileName);
+        RecordingIndexEntry? entry;
+        try { entry = _recordingIndex.Find(file.FileName); }
+        catch { entry = null; }
 
         if (entry == null)
         {
@@ -1765,25 +1553,9 @@ public partial class MainWindow : Window
         {
             _settings = win.Settings;
             _settings.Save();
-            _playServer?.UpdateSettings(_settings);
             // 設定保存だけではリロードしない。F5 または「更新」で手動取得。
             StatusText.Text = "設定を保存しました。F5 または「更新」で再読み込みできます。";
         }
     }
 
-    // ── 再生サーバー ──────────────────────────────────────────────────────────
-
-    private void StartPlayServer()
-    {
-        try
-        {
-            _playServer = new PlayServer(_settings.PlayServerPort, _settings);
-            _playServer.Start();
-        }
-        catch (Exception ex)
-        {
-            _playServer = null;
-            System.Diagnostics.Debug.WriteLine($"PlayServer 起動失敗: {ex.Message}");
-        }
-    }
 }

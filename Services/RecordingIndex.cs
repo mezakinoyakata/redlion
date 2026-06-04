@@ -11,6 +11,47 @@ public sealed class RecordingIndex : IDisposable
 
     public RecordingIndex(string connStr) => _connStr = connStr;
 
+    public bool IsConfigured => !string.IsNullOrWhiteSpace(_connStr);
+
+    public List<RecFileInfo> LoadAll()
+    {
+        if (!IsConfigured) return [];
+        var list = new List<RecFileInfo>();
+        lock (_lock)
+        {
+            using var conn = OpenConnection();
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = "SELECT * FROM recordings ORDER BY start_time DESC";
+            using var r = cmd.ExecuteReader();
+            while (r.Read())
+            {
+                var e = ReadEntry(r);
+                list.Add(new RecFileInfo
+                {
+                    ID                = e.RecId,
+                    RecFilePath       = e.OriginalFilePath,
+                    Title             = e.FullTitle,
+                    StartTime         = e.StartTime,
+                    StartTimeEpg      = e.StartTimeEpg,
+                    DurationSecond    = e.DurationSecond,
+                    ServiceName       = e.ServiceName,
+                    OriginalNetworkID = e.OriginalNetworkID,
+                    TransportStreamID = e.TransportStreamID,
+                    ServiceID         = e.ServiceID,
+                    EventID           = e.EventID,
+                    ProgramInfo       = e.ProgramInfo,
+                    Comment           = e.Comment,
+                    ErrInfo           = e.ErrInfo,
+                    Drops             = e.Drops,
+                    Scrambles         = e.Scrambles,
+                    RecStatus         = e.RecStatus,
+                    ProtectFlag       = e.ProtectFlag,
+                });
+            }
+        }
+        return list;
+    }
+
     // タイトルをシリーズ名と話数に分解する。
     // 対応パターン: " #N" "＃N" "第N話" "第N回" "（N）" "(N)" 末尾 " N"
     public static (string series, int? episode) ParseTitle(string title)
@@ -120,6 +161,20 @@ public sealed class RecordingIndex : IDisposable
             cmd.Parameters.AddWithValue("@fp",    rec.RecFilePath ?? "");
             cmd.Parameters.AddWithValue("@sa",    DateTime.Now);
             cmd.ExecuteNonQuery();
+        }
+    }
+
+    public string? FindPathByRecId(uint recId)
+    {
+        if (!IsConfigured) return null;
+        lock (_lock)
+        {
+            using var conn = OpenConnection();
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = "SELECT original_file_path FROM recordings WHERE rec_id = @id LIMIT 1";
+            cmd.Parameters.AddWithValue("@id", (long)recId);
+            using var r = cmd.ExecuteReader();
+            return r.Read() && !r.IsDBNull(0) ? r.GetString(0) : null;
         }
     }
 

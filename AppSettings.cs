@@ -16,9 +16,6 @@ public class AppSettings
     public string PlayerPath { get; set; } = @"C:\ap\MPC-BE.1.8.1.x64\mpc-be64.exe";
     public int RefreshIntervalSeconds { get; set; } = 60;
 
-    /// <summary>再生サーバーのポート番号（ブラウザから /play?id=N で MPC-BE 起動）。</summary>
-    public int PlayServerPort { get; set; } = 5580;
-
     /// <summary>エンコード済みフォルダのパス（ディレクトリタブで .mp4 を一覧表示）。</summary>
     public string EncodedFolder { get; set; } = "";
 

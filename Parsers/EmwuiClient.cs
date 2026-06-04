@@ -67,13 +67,6 @@ public class EmwuiClient(string baseUrl)
         return ParseItemsWithTotal(xml, ParseRecItem);
     }
 
-    /// <summary>指定 ID の recFilePath のみ返す（PlayServer から使用）。</summary>
-    public async Task<string?> GetRecFilePathAsync(uint id)
-    {
-        var xml = await _http.GetStringAsync($"{Base}/api/EnumRecInfo?id={id}");
-        return ParseItemsWithTotal(xml, ParseRecItem).items.FirstOrDefault()?.RecFilePath;
-    }
-
     private static RecFileInfo? ParseRecItem(XElement e)
     {
         try
@@ -192,71 +185,6 @@ public class EmwuiClient(string baseUrl)
             return data;
         }
         catch { return null; }
-    }
-
-    // ── 番組情報（EnumRecInfo?id=N）────────────────────────────────────────────────
-
-    /// <summary>
-    /// 指定 ID の録画情報から番組説明テキストを取得する。
-    /// EnumRecInfo?id=N は programInfo フィールドにフル内容が入っている。
-    /// （count=N の一括取得版は programInfo が空のため、行選択時に個別取得する）
-    /// 取得できなかった場合は "" を返す（例外は内部で握りつぶす）。
-    /// </summary>
-    public async Task<string> GetProgramInfoTextAsync(uint id, CancellationToken ct = default)
-    {
-        try
-        {
-            var xml = await _http.GetStringAsync($"{Base}/api/EnumRecInfo?id={id}", ct);
-            var (items, _) = ParseItemsWithTotal(xml, ParseRecItem);
-            var raw = items.FirstOrDefault()?.ProgramInfo ?? "";
-            return ExtractDescFromProgramInfo(raw);
-        }
-        catch { return ""; }
-    }
-
-    /// <summary>
-    /// programInfo テキスト（EMWUI の ProgramInfo 形式）から番組説明部分を抽出する。
-    /// 形式:
-    ///   行1: 日付時刻
-    ///   行2: サービス名
-    ///   行3: タイトル
-    ///   (空行)
-    ///   概要テキスト
-    ///   (空行)
-    ///   詳細情報
-    ///   詳細テキスト
-    ///   (空行)
-    ///   ジャンル : ...
-    ///   映像 : ...
-    ///   OriginalNetworkID:...
-    /// </summary>
-    private static string ExtractDescFromProgramInfo(string programInfo)
-    {
-        if (string.IsNullOrWhiteSpace(programInfo)) return "";
-
-        var lines = programInfo.Split('\n');
-
-        // ヘッダー（日付・サービス・タイトル）の 3 行をスキップし、その後の空行もスキップ
-        int start = 3;
-        while (start < lines.Length && string.IsNullOrWhiteSpace(lines[start])) start++;
-
-        // 「ジャンル :」「映像 :」「OriginalNetworkID:」で終端を検出
-        int end = lines.Length;
-        for (int i = start; i < lines.Length; i++)
-        {
-            if (lines[i].StartsWith("ジャンル :") ||
-                lines[i].StartsWith("映像 :") ||
-                lines[i].StartsWith("OriginalNetworkID:"))
-            {
-                end = i;
-                break;
-            }
-        }
-
-        // 末尾の空行を除去
-        while (end > start && string.IsNullOrWhiteSpace(lines[end - 1])) end--;
-
-        return string.Join('\n', lines[start..end]).Trim();
     }
 
     // ── 共通 XML パーサー ──────────────────────────────────────────────────────────

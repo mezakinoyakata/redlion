@@ -17,7 +17,6 @@ public partial class SettingsWindow : Window
             RecordingFolder    = current.RecordingFolder,
             PlayerPath         = current.PlayerPath,
             RefreshIntervalSeconds = current.RefreshIntervalSeconds,
-            PlayServerPort     = current.PlayServerPort,
             EncodedFolder      = current.EncodedFolder,
             DbConnectionString = current.DbConnectionString,
         };
@@ -34,10 +33,10 @@ public partial class SettingsWindow : Window
         Settings.EmwuiBaseUrl    = EmwuiUrlBox.Text.Trim();
         if (int.TryParse(MaxRecItemsBox.Text.Trim(), out var n) && n > 0)
             Settings.MaxRecItems = n;
-        Settings.RecordingFolder     = RecFolderBox.Text.Trim();
-        Settings.PlayerPath          = PlayerPathBox.Text.Trim();
-        Settings.EncodedFolder       = EncodedFolderBox.Text.Trim();
-        Settings.DbConnectionString  = DbConnectionStringBox.Text.Trim();
+        Settings.RecordingFolder    = RecFolderBox.Text.Trim();
+        Settings.PlayerPath         = PlayerPathBox.Text.Trim();
+        Settings.EncodedFolder      = EncodedFolderBox.Text.Trim();
+        Settings.DbConnectionString = DbConnectionStringBox.Text.Trim();
         DialogResult = true;
         Close();
     }
