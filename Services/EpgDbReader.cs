@@ -11,6 +11,32 @@ public sealed class EpgDbReader
 
     public bool IsConfigured => !string.IsNullOrWhiteSpace(_connStr);
 
+    public string? GetEventInfoTextByTitle(string title, DateTime startTime)
+    {
+        if (!IsConfigured || string.IsNullOrEmpty(title)) return null;
+        try
+        {
+            using var conn = new MySqlConnection(_connStr);
+            conn.Open();
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText =
+                "SELECT short_text, ext_text FROM events " +
+                "WHERE event_name=@title AND start_time >= @lo AND start_time <= @hi LIMIT 1";
+            cmd.Parameters.AddWithValue("@title", title);
+            cmd.Parameters.AddWithValue("@lo", startTime.AddMinutes(-2));
+            cmd.Parameters.AddWithValue("@hi", startTime.AddMinutes(2));
+            using var r = cmd.ExecuteReader();
+            if (!r.Read()) return null;
+            var shortText = r.IsDBNull(0) ? "" : r.GetString(0);
+            var extText   = r.IsDBNull(1) ? "" : r.GetString(1);
+            if (string.IsNullOrEmpty(shortText) && string.IsNullOrEmpty(extText)) return null;
+            return string.IsNullOrEmpty(extText)   ? shortText
+                 : string.IsNullOrEmpty(shortText) ? extText
+                 : shortText + "\n" + extText;
+        }
+        catch { return null; }
+    }
+
     public string? GetEventInfoText(int onid, int tsid, int sid, int eventId)
     {
         if (!IsConfigured) return null;

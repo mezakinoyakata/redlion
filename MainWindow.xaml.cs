@@ -306,7 +306,7 @@ public partial class MainWindow : Window
 
         DirPlayButton.Visibility = Visibility.Visible;
 
-        // ファイル名から即時表示（ブロッキングなし）
+        // ファイル名から即時表示
         DirTitle.Text = file.ParsedTitle;
         DirService.Text = file.ParsedStation;
         DirDateTime.Text = file.ParsedStartTimeText;
@@ -314,31 +314,23 @@ public partial class MainWindow : Window
         DirProgramInfoLabel.Visibility = Visibility.Collapsed;
         DirProgramInfo.Visibility = Visibility.Collapsed;
 
-        // MySQL で非同期補完（接続不可でも UI をブロックしない）
-        RecordingIndexEntry? entry;
-        try { entry = await Task.Run(() => _recordingIndex.Find(file.FileName)); }
-        catch { entry = null; }
+        // events テーブルをファイル名（タイトル＋開始時刻）で検索して番組情報を取得
+        if (file.ParsedStartTime.HasValue)
+        {
+            var title     = file.ParsedTitle;
+            var startTime = file.ParsedStartTime.Value;
+            var progInfo = await Task.Run(() =>
+                new EpgDbReaderService(_settings.DbConnectionString)
+                    .GetEventInfoTextByTitle(title, startTime));
 
-        if (!ReferenceEquals(DirList.SelectedItem, file) || entry == null) return;
+            if (!ReferenceEquals(DirList.SelectedItem, file)) return;
 
-        DirTitle.Text = entry.FullTitle;
-        DirService.Text = entry.ServiceName;
-        DirDateTime.Text = $"{entry.StartTime:yyyy/MM/dd HH:mm} ({entry.DurationText})";
-        var errSuffix = string.IsNullOrWhiteSpace(entry.Comment) ? "" : $"  [{entry.Comment.Trim()}]";
-        DirDrops.Text = $"ドロップ: {entry.Drops}  スクランブル: {entry.Scrambles}{errSuffix}";
+            var hasInfo = !string.IsNullOrEmpty(progInfo);
+            DirProgramInfoLabel.Visibility = hasInfo ? Visibility.Visible : Visibility.Collapsed;
+            DirProgramInfo.Visibility = DirProgramInfoLabel.Visibility;
+            DirProgramInfo.Text = progInfo ?? "";
+        }
 
-        var progInfo = entry.EventID != 0
-            ? await Task.Run(() => new EpgDbReaderService(_settings.DbConnectionString).GetEventInfoText(
-                entry.OriginalNetworkID, entry.TransportStreamID, entry.ServiceID, entry.EventID))
-              ?? entry.ProgramInfo
-            : entry.ProgramInfo;
-
-        if (!ReferenceEquals(DirList.SelectedItem, file)) return;
-
-        var hasInfo = !string.IsNullOrEmpty(progInfo);
-        DirProgramInfoLabel.Visibility = hasInfo ? Visibility.Visible : Visibility.Collapsed;
-        DirProgramInfo.Visibility = DirProgramInfoLabel.Visibility;
-        DirProgramInfo.Text = progInfo;
     }
 
     private void DirList_DoubleClick(object sender, MouseButtonEventArgs e)
