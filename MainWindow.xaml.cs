@@ -491,7 +491,10 @@ public partial class MainWindow : Window
             _settings.Save();
             _recordingIndex = new RecordingIndexService(_settings.DbConnectionString);
             _recordingIndex.Load();
-            StatusText.Text = "設定を保存しました。F5 で再読み込みできます。";
+            var root = _settings.EncodedFolder.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            _dirRoot = root;
+            _currentDirPath = root;
+            LoadMediaFiles();
         }
     }
 
