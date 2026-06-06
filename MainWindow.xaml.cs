@@ -281,7 +281,7 @@ public partial class MainWindow : Window
 
     private void DirRefresh_Click(object sender, RoutedEventArgs e) => LoadMediaFiles();
 
-    private void DirList_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    private async void DirList_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (DirList.SelectedItem is not MediaFile file)
         {
@@ -306,20 +306,20 @@ public partial class MainWindow : Window
 
         DirPlayButton.Visibility = Visibility.Visible;
 
+        // ファイル名から即時表示（ブロッキングなし）
+        DirTitle.Text = file.ParsedTitle;
+        DirService.Text = file.ParsedStation;
+        DirDateTime.Text = file.ParsedStartTimeText;
+        DirDrops.Text = "";
+        DirProgramInfoLabel.Visibility = Visibility.Collapsed;
+        DirProgramInfo.Visibility = Visibility.Collapsed;
+
+        // MySQL で非同期補完（接続不可でも UI をブロックしない）
         RecordingIndexEntry? entry;
-        try { entry = _recordingIndex.Find(file.FileName); }
+        try { entry = await Task.Run(() => _recordingIndex.Find(file.FileName)); }
         catch { entry = null; }
 
-        if (entry == null)
-        {
-            DirTitle.Text = file.ParsedTitle;
-            DirService.Text = file.ParsedStation;
-            DirDateTime.Text = file.ParsedStartTimeText;
-            DirDrops.Text = "";
-            DirProgramInfoLabel.Visibility = Visibility.Collapsed;
-            DirProgramInfo.Visibility = Visibility.Collapsed;
-            return;
-        }
+        if (!ReferenceEquals(DirList.SelectedItem, file) || entry == null) return;
 
         DirTitle.Text = entry.FullTitle;
         DirService.Text = entry.ServiceName;
@@ -327,12 +327,13 @@ public partial class MainWindow : Window
         var errSuffix = string.IsNullOrWhiteSpace(entry.Comment) ? "" : $"  [{entry.Comment.Trim()}]";
         DirDrops.Text = $"ドロップ: {entry.Drops}  スクランブル: {entry.Scrambles}{errSuffix}";
 
-        // 番組情報は events テーブルから取得（EpgTimerSrv が常時更新）
         var progInfo = entry.EventID != 0
-            ? new EpgDbReaderService(_settings.DbConnectionString).GetEventInfoText(
-                entry.OriginalNetworkID, entry.TransportStreamID, entry.ServiceID, entry.EventID)
+            ? await Task.Run(() => new EpgDbReaderService(_settings.DbConnectionString).GetEventInfoText(
+                entry.OriginalNetworkID, entry.TransportStreamID, entry.ServiceID, entry.EventID))
               ?? entry.ProgramInfo
             : entry.ProgramInfo;
+
+        if (!ReferenceEquals(DirList.SelectedItem, file)) return;
 
         var hasInfo = !string.IsNullOrEmpty(progInfo);
         DirProgramInfoLabel.Visibility = hasInfo ? Visibility.Visible : Visibility.Collapsed;
