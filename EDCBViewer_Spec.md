@@ -34,7 +34,7 @@ EDCBViewer/
 │   ├── MediaFile.cs           ディレクトリタブ用メディアファイル
 │   └── RecordingIndexEntry.cs 録画インデックスエントリ
 ├── Parsers/
-│   ├── EmwuiClient.cs         EMWUI HTTP API クライアント
+│   ├── EmwuiClient.cs         EMWUI HTTP API クライアント（呼び出し元なし・削除予定）
 │   └── EncodingDetector.cs    文字コード検出
 └── Services/
     ├── EpgDbReader.cs         MySQL EPG DB 読み取り
@@ -51,12 +51,11 @@ EDCBViewer/
 
 | プロパティ | 説明 | デフォルト |
 |---|---|---|
-| EmwuiBaseUrl | EpgTimerSrv の EMWUI URL（予約一覧・番組情報フォールバック用）例: `http://5600x:5510` | `""` |
 | MaxRecItems | 録画済み・予約・ディレクトリ各タブの1ページ表示件数 | `500` |
 | RecordingFolder | 録画フォルダ（追っかけ再生時のファイル探索用）例: `\\5600x\d\PT2` | `\\5600x\d\PT2` |
 | PlayerPath | 動画プレイヤー実行ファイルのパス | MPC-BE のパス |
 | EncodedFolder | ディレクトリタブの起点フォルダ | `""` |
-| DbConnectionString | MySQL 接続文字列（録画インデックス・EPG DB 共用）例: `Server=5600x;Database=edcbviewer;Uid=edcb;Pwd=xxx` | `""` |
+| DbConnectionString | MySQL 接続文字列（EPG DB 接続用）例: `Server=5600x;Database=edcbviewer;Uid=edcb;Pwd=xxx` | `""` |
 
 ### AppSettings.cs に存在するが UI に出ない項目
 
@@ -64,10 +63,6 @@ EDCBViewer/
 |---|---|
 | RefreshIntervalSeconds | 自動更新無効化のため未使用 |
 | EpgDataFolder | `*_epg.dat` 用として残存・未使用 |
-
-### ToUncPath()
-
-`EmwuiBaseUrl` のホスト名を使い、サーバーローカルパス（例: `D:\PT2\foo.ts`）を UNC パス（`\\5600x\d\PT2\foo.ts`）に変換する。すでに UNC パスの場合はそのまま返す。録画ファイル再生時に使用。
 
 ---
 
@@ -84,15 +79,8 @@ RecordingIndex.LoadAll()
 DbConnectionString 未設定 → 録画一覧は空
 ```
 
-### 予約一覧
-
-```
-EmwuiClient.GetReserveInfoAsync()
-  → GET /api/EnumReserveInfo?count=500&index=M（バッチ取得）
-  → XML 解析 → List<ReserveData>
-
-EmwuiBaseUrl 未設定 → 予約一覧は空
-```
+> **注意**: `recordings` テーブルへの書き込みはすでに行われていない（ライター廃止済み）。
+> テーブルは `recordings_old` にリネーム済み。録画済みタブは将来的に廃止予定。
 
 ### 番組情報（録画済み選択時）
 
@@ -101,19 +89,7 @@ EmwuiBaseUrl 未設定 → 予約一覧は空
 ② info.ProgramInfo（MySQL recordings.program_info カラム）非空 → 表示
 ③ EpgDbReader.GetEventInfoText(onid, tsid, sid, event_id)
      → MySQL events テーブル検索 → ヒット → キャッシュに追加して表示
-④ すべて空 → 番組情報なしで終了（EMWUI フォールバックなし）
-```
-
-### 番組情報（予約選択時）
-
-```
-data.ProgramInfo が null（未取得）の場合のみ取得:
-① EpgDbReader.GetEventInfoText(onid, tsid, sid, event_id)
-     → MySQL events テーブル検索
-② ① が空 かつ EmwuiBaseUrl 設定済み
-     → EmwuiClient.GetEventInfoTextAsync()
-       GET /api/EnumEventInfo?basic=0&id=ONID-TSID-SID-EID
-取得結果を data.ProgramInfo に保存（再選択時は再取得しない）
+④ すべて空 → 番組情報なしで終了
 ```
 
 ### proginfo_cache.json
@@ -170,8 +146,8 @@ data.ProgramInfo が null（未取得）の場合のみ取得:
 
 | タブ | ページ数の基準 |
 |---|---|
-| 録画済み | MySQL recordings 全件数 |
-| 予約録画 | EMWUI から取得した全予約数 |
+| 録画済み | MySQL recordings 全件数（テーブルは recordings_old にリネーム済み・実質空） |
+| 予約録画 | 取得した全予約数 |
 | ディレクトリ | カレントディレクトリのファイル数 |
 
 ---
@@ -208,7 +184,18 @@ data.ProgramInfo が null（未取得）の場合のみ取得:
 
 ### ファイル選択時の情報表示
 
-MySQL `recordings` テーブルを `file_name`（拡張子なしファイル名）で検索し、一致するエントリがあれば右ペインにタイトル・放送局・日時・ドロップ数・番組情報を表示。一致なしの場合はファイル名から ParsedTitle / ParsedStation / ParsedStartTime を表示。
+ファイル名から `ParsedTitle` / `ParsedStation` / `ParsedStartTime` を即時表示した後、非同期で MySQL を検索して番組情報を補完する。
+
+```
+① ファイル名パース結果（ParsedTitle / ParsedStation / ParsedStartTime）を右ペインに即表示
+② ParsedStation と ParsedStartTime が取得できた場合:
+     EpgDbReader.GetEventInfoTextByStationAndTime(station, startTime)
+       → events JOIN services WHERE service_name=@svc AND start_time BETWEEN ±2分
+       → ヒット → short_text + ext_text を番組情報として表示
+③ ②がヒットしない、または ParsedStation/ParsedStartTime 未取得 → 番組情報欄は非表示
+```
+
+EDCB ファイル名のタイトル（`{Title2}` マクロ）は特殊文字を除去するため `event_name` と一致しないことがある。放送局名と開始時刻でユニークに特定する。
 
 ---
 
@@ -273,6 +260,10 @@ MySQL `recordings` テーブルを `file_name`（拡張子なしファイル名�
 
 `(onid, tsid, sid, event_id)` で `events` テーブルを検索し `short_text + "\n" + ext_text` を返す。両方空なら null。
 
+### GetEventInfoTextByStationAndTime
+
+`service_name`（放送局名）と `start_time`（開始時刻 ±2分）で `events JOIN services` を検索し `short_text + "\n" + ext_text` を返す。ディレクトリタブのファイル選択時に使用。
+
 > `SyncCacheToDbAsync()` メソッドはコード上に残存しているが呼び出し元なし。削除予定。
 
 ### 書き込み側（EpgTimerSrv）
@@ -285,9 +276,7 @@ EpgTimerSrv（C++）が EPG ロード完了後に MySQL へ書き出す。
 ## 他プロジェクトとの連携
 
 ### EpgTimerSrv（C++）
-- **予約一覧**: EMWUI HTTP API（`/api/EnumReserveInfo`）経由
-- **録画一覧**: MySQL `recordings` テーブルから直接取得（EMWUI 不使用）
-- **EPG DB**: EpgTimerSrv が書き出す MySQL `events` テーブルを参照
+- **EPG DB**: EpgTimerSrv が書き出す MySQL `events` / `services` テーブルを参照
 
 ### EDCBEpgImporter（C#）
 - `C:\work\CC\EDCBEpgImporter`

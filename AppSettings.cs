@@ -4,9 +4,6 @@ namespace EDCBViewer;
 
 public class AppSettings
 {
-    /// <summary>EMWUI の URL。例: http://5600x:5510</summary>
-    public string EmwuiBaseUrl { get; set; } = "";
-
     /// <summary>録画済み一覧の取得件数上限（新しい順に N 件）。</summary>
     public int MaxRecItems { get; set; } = 500;
 
@@ -24,47 +21,6 @@ public class AppSettings
 
     /// <summary>MySQL 接続文字列（例: Server=5600x;Database=edcbviewer;Uid=edcb;Pwd=pass）</summary>
     public string DbConnectionString { get; set; } = "";
-
-    // API が返すファイルパスはサーバー側のローカルパス (例: D:\PT2\foo.ts)
-    // EmwuiBaseUrl のホスト名を使って UNC パスに変換する:
-    //   "D:\PT2\foo.ts" + host "5600x" → "\\5600x\d\PT2\foo.ts"
-    public string ToUncPath(string localPath)
-    {
-        if (string.IsNullOrEmpty(localPath))
-            return localPath;
-
-        // すでに UNC パスならそのまま返す
-        if (localPath.StartsWith(@"\\"))
-            return localPath;
-
-        // ドライブレター形式 (X:\...) を UNC に変換
-        if (localPath.Length >= 3 && localPath[1] == ':' && localPath[2] == '\\')
-        {
-            var server = UncServer;
-            if (!string.IsNullOrEmpty(server))
-            {
-                var drive = char.ToLower(localPath[0]);
-                var rest = localPath[3..]; // ドライブレターと "\" を除いた残り
-                return $@"\\{server}\{drive}\{rest}";
-            }
-        }
-
-        return localPath;
-    }
-
-    // EmwuiBaseUrl からホスト名を抽出 ("http://5600x:5510" → "5600x")
-    private string UncServer
-    {
-        get
-        {
-            if (!string.IsNullOrWhiteSpace(EmwuiBaseUrl))
-            {
-                try { return new Uri(EmwuiBaseUrl).Host; }
-                catch { }
-            }
-            return "";
-        }
-    }
 
     private static readonly string SettingsPath =
         Path.Combine(

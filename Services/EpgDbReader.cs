@@ -11,20 +11,21 @@ public sealed class EpgDbReader
 
     public bool IsConfigured => !string.IsNullOrWhiteSpace(_connStr);
 
-    public string? GetEventInfoTextByTitle(string title, DateTime startTime)
+    public string? GetEventInfoTextByStationAndTime(string stationName, DateTime startTime)
     {
-        if (!IsConfigured || string.IsNullOrEmpty(title)) return null;
+        if (!IsConfigured || string.IsNullOrEmpty(stationName)) return null;
         try
         {
             using var conn = new MySqlConnection(_connStr);
             conn.Open();
             using var cmd = conn.CreateCommand();
             cmd.CommandText =
-                "SELECT short_text, ext_text FROM events " +
-                "WHERE event_name=@title AND start_time >= @lo AND start_time <= @hi LIMIT 1";
-            cmd.Parameters.AddWithValue("@title", title);
-            cmd.Parameters.AddWithValue("@lo", startTime.AddMinutes(-2));
-            cmd.Parameters.AddWithValue("@hi", startTime.AddMinutes(2));
+                "SELECT e.short_text, e.ext_text FROM events e " +
+                "JOIN services s ON e.onid=s.onid AND e.tsid=s.tsid AND e.sid=s.sid " +
+                "WHERE s.service_name=@svc AND e.start_time >= @lo AND e.start_time <= @hi LIMIT 1";
+            cmd.Parameters.AddWithValue("@svc", stationName);
+            cmd.Parameters.AddWithValue("@lo", startTime.AddMinutes(-2).ToString("yyyy-MM-ddTHH:mm:ss"));
+            cmd.Parameters.AddWithValue("@hi", startTime.AddMinutes(2).ToString("yyyy-MM-ddTHH:mm:ss"));
             using var r = cmd.ExecuteReader();
             if (!r.Read()) return null;
             var shortText = r.IsDBNull(0) ? "" : r.GetString(0);

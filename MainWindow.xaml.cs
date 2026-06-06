@@ -314,14 +314,14 @@ public partial class MainWindow : Window
         DirProgramInfoLabel.Visibility = Visibility.Collapsed;
         DirProgramInfo.Visibility = Visibility.Collapsed;
 
-        // events テーブルをファイル名（タイトル＋開始時刻）で検索して番組情報を取得
-        if (file.ParsedStartTime.HasValue)
+        // events テーブルをサービス名＋開始時刻で検索して番組情報を取得
+        if (file.ParsedStartTime.HasValue && !string.IsNullOrEmpty(file.ParsedStation))
         {
-            var title     = file.ParsedTitle;
+            var station   = file.ParsedStation;
             var startTime = file.ParsedStartTime.Value;
             var progInfo = await Task.Run(() =>
                 new EpgDbReaderService(_settings.DbConnectionString)
-                    .GetEventInfoTextByTitle(title, startTime));
+                    .GetEventInfoTextByStationAndTime(station, startTime));
 
             if (!ReferenceEquals(DirList.SelectedItem, file)) return;
 
