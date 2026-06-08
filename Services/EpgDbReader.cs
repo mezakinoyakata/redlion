@@ -24,8 +24,8 @@ public sealed class EpgDbReader
                 "JOIN services s ON e.onid=s.onid AND e.tsid=s.tsid AND e.sid=s.sid " +
                 "WHERE s.service_name=@svc AND e.start_time >= @lo AND e.start_time <= @hi LIMIT 1";
             cmd.Parameters.AddWithValue("@svc", stationName);
-            cmd.Parameters.AddWithValue("@lo", startTime.AddMinutes(-2).ToString("yyyy-MM-ddTHH:mm:ss"));
-            cmd.Parameters.AddWithValue("@hi", startTime.AddMinutes(2).ToString("yyyy-MM-ddTHH:mm:ss"));
+            cmd.Parameters.AddWithValue("@lo", startTime.AddMinutes(-2).ToString("yyyy-MM-dd HH:mm:ss"));
+            cmd.Parameters.AddWithValue("@hi", startTime.AddMinutes(2).ToString("yyyy-MM-dd HH:mm:ss"));
             using var r = cmd.ExecuteReader();
             if (!r.Read()) return null;
             var shortText = r.IsDBNull(0) ? "" : r.GetString(0);
@@ -63,6 +63,52 @@ public sealed class EpgDbReader
                  : shortText + "\n" + extText;
         }
         catch { return null; }
+    }
+
+    public List<EpgEvent> SearchEvents(string keyword, int limit = 200)
+    {
+        if (!IsConfigured || string.IsNullOrWhiteSpace(keyword)) return [];
+        try
+        {
+            using var conn = new MySqlConnection(_connStr);
+            conn.Open();
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText =
+                "SELECT onid, tsid, sid, event_id, service_name, start_time, duration_sec, " +
+                "event_name, short_text, ext_text, free_ca_flag " +
+                "FROM program_guide " +
+                "WHERE MATCH(event_name, short_text, ext_text) AGAINST (@kw IN BOOLEAN MODE) " +
+                "ORDER BY start_time DESC LIMIT @lim";
+            cmd.Parameters.AddWithValue("@kw",  keyword);
+            cmd.Parameters.AddWithValue("@lim", limit);
+            using var r = cmd.ExecuteReader();
+            var list = new List<EpgEvent>();
+            while (r.Read())
+            {
+                list.Add(new EpgEvent
+                {
+                    ONID        = (ushort)r.GetInt32(0),
+                    TSID        = (ushort)r.GetInt32(1),
+                    SID         = (ushort)r.GetInt32(2),
+                    EventID     = (ushort)r.GetInt32(3),
+                    ServiceName = r.IsDBNull(4)  ? "" : r.GetString(4),
+                    StartTime   = r.IsDBNull(5)  ? null : ParseStartTime(r.GetString(5)),
+                    DurationSec = r.IsDBNull(6)  ? null : (uint?)r.GetInt32(6),
+                    EventName   = r.IsDBNull(7)  ? "" : r.GetString(7),
+                    ShortText   = r.IsDBNull(8)  ? "" : r.GetString(8),
+                    ExtText     = r.IsDBNull(9)  ? "" : r.GetString(9),
+                    FreeCAFlag  = (byte)(r.IsDBNull(10) ? 0 : r.GetInt32(10)),
+                });
+            }
+            return list;
+        }
+        catch { return []; }
+    }
+
+    private static DateTime? ParseStartTime(string? s)
+    {
+        if (string.IsNullOrEmpty(s)) return null;
+        return DateTime.TryParse(s, out var dt) ? dt : null;
     }
 
     // キャッシュ済みの番組情報を MySQL に INSERT IGNORE で書き込む（既存行は上書きしない）
