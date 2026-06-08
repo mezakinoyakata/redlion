@@ -107,31 +107,35 @@ public partial class MainWindow : Window
 
             var merged = await Task.Run(() =>
             {
-                static IEnumerable<T> TryEnum<T>(Func<IEnumerable<T>> fn)
+                // フォルダ単位で例外を隔離。fn() の呼び出しから列挙・Select 変換まで
+                // すべてを try 内で完結させ、遅延評価による例外漏れを防ぐ。
+                static List<T> TryList<T>(Func<IEnumerable<T>> fn)
                 {
-                    try { return fn(); } catch { return []; }
+                    try { return fn().ToList(); } catch { return []; }
                 }
 
                 var dirs = roots
-                    .SelectMany(r => TryEnum(() => new DirectoryInfo(r).EnumerateDirectories()))
-                    .Select(di => new MediaFile
-                    {
-                        FilePath    = di.FullName,
-                        IsDirectory = true,
-                        LastModified = di.LastWriteTime,
-                    })
+                    .SelectMany(r => TryList(() =>
+                        new DirectoryInfo(r).EnumerateDirectories()
+                            .Select(di => new MediaFile
+                            {
+                                FilePath     = di.FullName,
+                                IsDirectory  = true,
+                                LastModified = di.LastWriteTime,
+                            })))
                     .OrderBy(d => d.DisplayName)
                     .ToList();
 
                 var files = roots
-                    .SelectMany(r => new[] { "*.ts", "*.m2ts", "*.mp4" }
-                        .SelectMany(pat => TryEnum(() => new DirectoryInfo(r).EnumerateFiles(pat))))
-                    .Select(fi => new MediaFile
-                    {
-                        FilePath    = fi.FullName,
-                        FileSize    = fi.Length,
-                        LastModified = fi.LastWriteTime,
-                    })
+                    .SelectMany(r => new[] { "*.ts", "*.m2ts", "*.mp4" }.SelectMany(pat =>
+                        TryList(() =>
+                            new DirectoryInfo(r).EnumerateFiles(pat)
+                                .Select(fi => new MediaFile
+                                {
+                                    FilePath     = fi.FullName,
+                                    FileSize     = fi.Length,
+                                    LastModified = fi.LastWriteTime,
+                                }))))
                     .OrderByDescending(f => f.ParsedStartTime ?? f.LastModified)
                     .ToList();
 
@@ -144,6 +148,23 @@ public partial class MainWindow : Window
             UpdateDirAddressBar();
             ShowDirPage();
             DirList.Focus();
+
+            // 起動直後にネットワーク未接続だったフォルダがあれば 5 秒後に再読込
+            var failedRoots = roots.Where(r =>
+                !merged.Any(f => f.FilePath.StartsWith(
+                    r.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                    + Path.DirectorySeparatorChar,
+                    StringComparison.OrdinalIgnoreCase))).ToList();
+            if (failedRoots.Count > 0)
+            {
+                _ = Task.Delay(5000).ContinueWith(_ =>
+                    Dispatcher.InvokeAsync(() =>
+                    {
+                        if (!_dirLoading && string.IsNullOrEmpty(_currentDirPath))
+                            LoadMediaFiles();
+                    }));
+            }
+
             return;
         }
 
