@@ -14,6 +14,8 @@ public partial class MainWindow : Window
 {
     private AppSettings _settings = AppSettings.Load();
     private RecordingIndexService _recordingIndex = null!;
+    private EpgDbReaderService    _epgReader       = null!;
+    private bool                  _inEpgSearch     = false;
 
     private List<MediaFile> _mediaFiles = [];
     private MediaFile? _selectedMediaFile;
@@ -41,6 +43,7 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
         _recordingIndex = new RecordingIndexService(_settings.DbConnectionString);
+        _epgReader      = new EpgDbReaderService(_settings.DbConnectionString);
         var root = _settings.EncodedFolder.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
         _dirRoot = root;
         _currentDirPath = root;
@@ -54,6 +57,14 @@ public partial class MainWindow : Window
         if (DirList.View is GridView dirGv)
             foreach (var col in dirGv.Columns)
                 _dirOrigHeaders[col] = col.Header?.ToString() ?? "";
+    }
+
+    private sealed record EpgResultItem(EpgEvent Event)
+    {
+        public string DisplayName         => Event.EventName;
+        public string ParsedStation       => Event.ServiceName;
+        public string ParsedStartTimeText => Event.StartTime?.ToString("yyyy/MM/dd HH:mm") ?? "";
+        public bool   IsDirectory         => false;
     }
 
     // ─── ディレクトリ ─────────────────────────────────────────────────────────
@@ -224,6 +235,7 @@ public partial class MainWindow : Window
 
     private void ShowDirPage()
     {
+        if (_inEpgSearch) return;
         var filtered = GetFilteredFiles();
         var total = filtered.Count;
         var totalPages = DirTotalPages(total);
@@ -255,19 +267,38 @@ public partial class MainWindow : Window
 
     private void DirSearchBox_TextChanged(object sender, TextChangedEventArgs e)
     {
-        if (string.IsNullOrEmpty(DirSearchBox.Text))
-        {
-            _dirCurrentPage = 0;
-            ShowDirPage();
-        }
+        _inEpgSearch = false;
+        _dirCurrentPage = 0;
+        ShowDirPage();
     }
 
-    private void DirSearchBox_KeyDown(object sender, KeyEventArgs e)
+    private async void DirSearchBox_KeyDown(object sender, KeyEventArgs e)
     {
         if (e.Key != Key.Enter) return;
         e.Handled = true;
-        _dirCurrentPage = 0;
-        ShowDirPage();
+        var q = DirSearchBox.Text.Trim();
+        if (string.IsNullOrEmpty(q))
+        {
+            _inEpgSearch = false;
+            _dirCurrentPage = 0;
+            ShowDirPage();
+            DirList.Focus();
+            return;
+        }
+
+        StatusText.Text = "検索中...";
+        _inEpgSearch = true;
+        var results = await Task.Run(() => _epgReader.SearchEvents(q));
+        DirList.ItemsSource = results.Select(ev => new EpgResultItem(ev)).ToList();
+        DirCountText.Text = $"{results.Count:#,0} 件";
+        DirPageLabel.Text = "";
+        DirFirstPageButton.IsEnabled = false;
+        DirPrevPageButton.IsEnabled  = false;
+        DirNextPageButton.IsEnabled  = false;
+        DirLastPageButton.IsEnabled  = false;
+        StatusText.Text = results.Count > 0
+            ? $"{results.Count:#,0} 件の番組が見つかりました"
+            : "一致する番組が見つかりません";
         if (DirList.Items.Count > 0) DirList.SelectedIndex = 0;
         DirList.Focus();
     }
@@ -283,6 +314,25 @@ public partial class MainWindow : Window
 
     private async void DirList_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
+        if (_inEpgSearch)
+        {
+            if (DirList.SelectedItem is not EpgResultItem epgItem) { ClearDirPanel(); return; }
+            DirTitle.Text    = epgItem.Event.EventName;
+            DirService.Text  = epgItem.Event.ServiceName;
+            DirDateTime.Text = epgItem.ParsedStartTimeText;
+            DirFilePath.Text = "";
+            DirDrops.Text    = "";
+            var infoText = string.IsNullOrEmpty(epgItem.Event.ExtText)   ? epgItem.Event.ShortText
+                         : string.IsNullOrEmpty(epgItem.Event.ShortText) ? epgItem.Event.ExtText
+                         : epgItem.Event.ShortText + "\n" + epgItem.Event.ExtText;
+            var hasInfo = !string.IsNullOrEmpty(infoText);
+            DirProgramInfoLabel.Visibility = hasInfo ? Visibility.Visible : Visibility.Collapsed;
+            DirProgramInfo.Visibility      = DirProgramInfoLabel.Visibility;
+            DirProgramInfo.Text            = infoText;
+            DirPlayButton.Visibility       = Visibility.Collapsed;
+            return;
+        }
+
         if (DirList.SelectedItem is not MediaFile file)
         {
             ClearDirPanel();
@@ -335,6 +385,7 @@ public partial class MainWindow : Window
 
     private void DirList_DoubleClick(object sender, MouseButtonEventArgs e)
     {
+        if (_inEpgSearch) return;
         if (DirList.SelectedItem is MediaFile file)
         {
             if (file.IsDirectory) NavigateDir(file.FilePath);
@@ -484,6 +535,7 @@ public partial class MainWindow : Window
             _settings.Save();
             _recordingIndex = new RecordingIndexService(_settings.DbConnectionString);
             _recordingIndex.Load();
+            _epgReader = new EpgDbReaderService(_settings.DbConnectionString);
             var root = _settings.EncodedFolder.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
             _dirRoot = root;
             _currentDirPath = root;
