@@ -15,7 +15,8 @@ public partial class MainWindow : Window
     private AppSettings _settings = AppSettings.Load();
     private RecordingIndexService _recordingIndex = null!;
     private EpgDbReaderService    _epgReader       = null!;
-    private bool                  _inEpgSearch     = false;
+    private bool _inEpgSearch     = false;
+    private bool _fileFilterActive = false;  // Enter押下時のみtrue、ナビゲート時にリセット
 
     private List<MediaFile> _mediaFiles = [];
     private MediaFile? _selectedMediaFile;
@@ -70,9 +71,10 @@ public partial class MainWindow : Window
 
     private void NavigateDir(string path)
     {
-        _currentDirPath = path;
-        _inEpgSearch = false;
-        _dirCurrentPage = 0;
+        _currentDirPath  = path;
+        _inEpgSearch     = false;
+        _fileFilterActive = false;
+        _dirCurrentPage  = 0;
         LoadMediaFiles();
     }
 
@@ -228,12 +230,15 @@ public partial class MainWindow : Window
         var dirs = _mediaFiles.Where(f => f.IsDirectory).OrderBy(d => d.DisplayName);
         IEnumerable<MediaFile> files = _mediaFiles.Where(f => !f.IsDirectory);
 
-        var terms = DirSearchBox.Text.Trim()
-            .Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        if (terms.Length > 0)
-            files = files.Where(f => terms.All(t =>
-                f.ParsedTitle.Contains(t, StringComparison.OrdinalIgnoreCase) ||
-                f.ParsedStation.Contains(t, StringComparison.OrdinalIgnoreCase)));
+        if (_fileFilterActive)
+        {
+            var terms = DirSearchBox.Text.Trim()
+                .Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            if (terms.Length > 0)
+                files = files.Where(f => terms.All(t =>
+                    f.ParsedTitle.Contains(t, StringComparison.OrdinalIgnoreCase) ||
+                    f.ParsedStation.Contains(t, StringComparison.OrdinalIgnoreCase)));
+        }
 
         if (_dirSortProp != null)
         {
@@ -324,8 +329,9 @@ public partial class MainWindow : Window
     private void DirSearchBox_TextChanged(object sender, TextChangedEventArgs e)
     {
         if (!string.IsNullOrEmpty(DirSearchBox.Text)) return;
-        _inEpgSearch = false;
-        _dirCurrentPage = 0;
+        _inEpgSearch      = false;
+        _fileFilterActive = false;
+        _dirCurrentPage   = 0;
         ShowDirPage();
     }
 
@@ -337,8 +343,9 @@ public partial class MainWindow : Window
 
         if (string.IsNullOrEmpty(q))
         {
-            _inEpgSearch = false;
-            _dirCurrentPage = 0;
+            _inEpgSearch      = false;
+            _fileFilterActive = false;
+            _dirCurrentPage   = 0;
             ShowDirPage();
             DirList.Focus();
             return;
@@ -352,8 +359,9 @@ public partial class MainWindow : Window
                 f.ParsedStation.Contains(t, StringComparison.OrdinalIgnoreCase)))
             .Any();
 
-        _inEpgSearch = false;
-        _dirCurrentPage = 0;
+        _inEpgSearch      = false;
+        _fileFilterActive = fileHits;
+        _dirCurrentPage   = 0;
         ShowDirPage();
 
         if (fileHits)
@@ -467,7 +475,6 @@ public partial class MainWindow : Window
 
     private void DirList_DoubleClick(object sender, MouseButtonEventArgs e)
     {
-        if (_inEpgSearch) return;
         if (DirList.SelectedItem is MediaFile file)
         {
             if (file.IsDirectory) NavigateDir(file.FilePath);
