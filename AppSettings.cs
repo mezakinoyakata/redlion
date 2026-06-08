@@ -13,8 +13,11 @@ public class AppSettings
     public string PlayerPath { get; set; } = @"C:\ap\MPC-BE.1.8.1.x64\mpc-be64.exe";
     public int RefreshIntervalSeconds { get; set; } = 60;
 
-    /// <summary>エンコード済みフォルダのパス（ディレクトリタブで .mp4 を一覧表示）。</summary>
+    /// <summary>エンコード済みフォルダのパス（旧設定、EncodedFolders への移行用）。</summary>
     public string EncodedFolder { get; set; } = "";
+
+    /// <summary>起点フォルダのリスト（ディレクトリタブでルートとして表示）。</summary>
+    public List<string> EncodedFolders { get; set; } = new();
 
     /// <summary>EDCBのEPGデータフォルダ（*_epg.dat が置かれている場所）。</summary>
     public string EpgDataFolder { get; set; } = "";
@@ -41,7 +44,11 @@ public class AppSettings
             if (File.Exists(SettingsPath))
             {
                 var json = File.ReadAllText(SettingsPath);
-                return JsonSerializer.Deserialize<AppSettings>(json) ?? new AppSettings();
+                var result = JsonSerializer.Deserialize<AppSettings>(json) ?? new AppSettings();
+                // EncodedFolder → EncodedFolders への移行
+                if (result.EncodedFolders.Count == 0 && !string.IsNullOrEmpty(result.EncodedFolder))
+                    result.EncodedFolders.Add(result.EncodedFolder);
+                return result;
             }
         }
         catch { }

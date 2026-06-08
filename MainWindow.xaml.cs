@@ -44,9 +44,8 @@ public partial class MainWindow : Window
         InitializeComponent();
         _recordingIndex = new RecordingIndexService(_settings.DbConnectionString);
         _epgReader      = new EpgDbReaderService(_settings.DbConnectionString);
-        var root = _settings.EncodedFolder.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-        _dirRoot = root;
-        _currentDirPath = root;
+        _dirRoot        = "";
+        _currentDirPath = "";
         InitSortHeaders();
         _recordingIndex.Load();
         Loaded += (_, _) => LoadMediaFiles();
@@ -72,7 +71,7 @@ public partial class MainWindow : Window
     private void NavigateDir(string path)
     {
         _currentDirPath = path;
-        DirSearchBox.Text = "";
+        _inEpgSearch = false;
         _dirCurrentPage = 0;
         LoadMediaFiles();
     }
@@ -90,10 +89,29 @@ public partial class MainWindow : Window
         var folder = _currentDirPath;
         if (string.IsNullOrWhiteSpace(folder))
         {
-            _mediaFiles = [];
-            DirList.ItemsSource = null;
-            StatusText.Text = "フォルダが未設定です。設定 → パス設定... で指定してください。";
+            var roots = _settings.EncodedFolders.Where(f => !string.IsNullOrEmpty(f)).ToList();
+            if (roots.Count == 0)
+            {
+                _mediaFiles = [];
+                DirList.ItemsSource = null;
+                StatusText.Text = "フォルダが未設定です。設定 → パス設定... で指定してください。";
+                DirPathBox.Text = "";
+                return;
+            }
+            _mediaFiles = roots
+                .Select(f => new MediaFile
+                {
+                    FilePath    = f.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
+                    IsDirectory = true,
+                    LastModified = DateTime.MinValue,
+                })
+                .OrderBy(d => d.DisplayName)
+                .ToList();
+            _inEpgSearch    = false;
+            _dirCurrentPage = 0;
             DirPathBox.Text = "";
+            ShowDirPage();
+            DirList.Focus();
             return;
         }
 
@@ -157,7 +175,12 @@ public partial class MainWindow : Window
         if (e.Key != Key.Enter) return;
         e.Handled = true;
         var path = DirPathBox.Text.Trim().TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-        if (string.IsNullOrEmpty(path) || !Directory.Exists(path))
+        if (string.IsNullOrEmpty(path))
+        {
+            NavigateDir("");
+            return;
+        }
+        if (!Directory.Exists(path))
         {
             DirPathBox.Text = _currentDirPath;
             StatusText.Text = $"フォルダが見つかりません: {DirPathBox.Text.Trim()}";
@@ -173,11 +196,12 @@ public partial class MainWindow : Window
         var dirs = _mediaFiles.Where(f => f.IsDirectory).OrderBy(d => d.DisplayName);
         IEnumerable<MediaFile> files = _mediaFiles.Where(f => !f.IsDirectory);
 
-        var q = DirSearchBox.Text.Trim();
-        if (!string.IsNullOrEmpty(q))
-            files = files.Where(f =>
-                f.ParsedTitle.Contains(q, StringComparison.OrdinalIgnoreCase) ||
-                f.ParsedStation.Contains(q, StringComparison.OrdinalIgnoreCase));
+        var terms = DirSearchBox.Text.Trim()
+            .Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (terms.Length > 0)
+            files = files.Where(f => terms.All(t =>
+                f.ParsedTitle.Contains(t, StringComparison.OrdinalIgnoreCase) ||
+                f.ParsedStation.Contains(t, StringComparison.OrdinalIgnoreCase)));
 
         if (_dirSortProp != null)
         {
@@ -267,6 +291,7 @@ public partial class MainWindow : Window
 
     private void DirSearchBox_TextChanged(object sender, TextChangedEventArgs e)
     {
+        if (!string.IsNullOrEmpty(DirSearchBox.Text)) return;
         _inEpgSearch = false;
         _dirCurrentPage = 0;
         ShowDirPage();
@@ -277,6 +302,7 @@ public partial class MainWindow : Window
         if (e.Key != Key.Enter) return;
         e.Handled = true;
         var q = DirSearchBox.Text.Trim();
+
         if (string.IsNullOrEmpty(q))
         {
             _inEpgSearch = false;
@@ -286,7 +312,27 @@ public partial class MainWindow : Window
             return;
         }
 
-        StatusText.Text = "検索中...";
+        // まずファイルフィルタを適用（スペース区切り AND）
+        var qTerms = q.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        var fileHits = _mediaFiles
+            .Where(f => !f.IsDirectory && qTerms.All(t =>
+                f.ParsedTitle.Contains(t, StringComparison.OrdinalIgnoreCase) ||
+                f.ParsedStation.Contains(t, StringComparison.OrdinalIgnoreCase)))
+            .Any();
+
+        _inEpgSearch = false;
+        _dirCurrentPage = 0;
+        ShowDirPage();
+
+        if (fileHits)
+        {
+            if (DirList.Items.Count > 0) DirList.SelectedIndex = 0;
+            DirList.Focus();
+            return;
+        }
+
+        // ファイルが見つからなければ EPG 全文検索にフォールバック
+        StatusText.Text = "ファイルが見つかりません。EPG を検索中...";
         _inEpgSearch = true;
         var results = await Task.Run(() => _epgReader.SearchEvents(q));
         DirList.ItemsSource = results.Select(ev => new EpgResultItem(ev)).ToList();
@@ -296,9 +342,12 @@ public partial class MainWindow : Window
         DirPrevPageButton.IsEnabled  = false;
         DirNextPageButton.IsEnabled  = false;
         DirLastPageButton.IsEnabled  = false;
-        StatusText.Text = results.Count > 0
-            ? $"{results.Count:#,0} 件の番組が見つかりました"
-            : "一致する番組が見つかりません";
+        if (_epgReader.LastSearchError != null)
+            StatusText.Text = $"EPG検索エラー: {_epgReader.LastSearchError}";
+        else
+            StatusText.Text = results.Count > 0
+                ? $"{results.Count:#,0} 件の番組が見つかりました"
+                : "一致するファイル・番組が見つかりません";
         if (DirList.Items.Count > 0) DirList.SelectedIndex = 0;
         DirList.Focus();
     }
@@ -316,6 +365,7 @@ public partial class MainWindow : Window
     {
         if (_inEpgSearch)
         {
+            _selectedMediaFile = null;
             if (DirList.SelectedItem is not EpgResultItem epgItem) { ClearDirPanel(); return; }
             DirTitle.Text    = epgItem.Event.EventName;
             DirService.Text  = epgItem.Event.ServiceName;
@@ -398,7 +448,9 @@ public partial class MainWindow : Window
         var dialog = new Microsoft.Win32.OpenFolderDialog
         {
             Title = "フォルダを選択",
-            InitialDirectory = string.IsNullOrEmpty(_currentDirPath) ? _dirRoot : _currentDirPath,
+            InitialDirectory = string.IsNullOrEmpty(_currentDirPath)
+                ? (_settings.EncodedFolders.FirstOrDefault() ?? "")
+                : _currentDirPath,
         };
         if (dialog.ShowDialog() != true) return;
         var selected = dialog.FolderName;
@@ -535,10 +587,9 @@ public partial class MainWindow : Window
             _settings.Save();
             _recordingIndex = new RecordingIndexService(_settings.DbConnectionString);
             _recordingIndex.Load();
-            _epgReader = new EpgDbReaderService(_settings.DbConnectionString);
-            var root = _settings.EncodedFolder.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-            _dirRoot = root;
-            _currentDirPath = root;
+            _epgReader      = new EpgDbReaderService(_settings.DbConnectionString);
+            _dirRoot        = "";
+            _currentDirPath = "";
             LoadMediaFiles();
         }
     }
