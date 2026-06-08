@@ -98,15 +98,51 @@ public partial class MainWindow : Window
                 DirPathBox.Text = "";
                 return;
             }
-            _mediaFiles = roots
-                .Select(f => new MediaFile
+
+            _mediaFiles = [];
+            DirList.ItemsSource = null;
+            StatusText.Text = "ファイル一覧を読み込み中...";
+
+            List<MediaFile> merged;
+            try
+            {
+                merged = await Task.Run(() =>
                 {
-                    FilePath    = f.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
-                    IsDirectory = true,
-                    LastModified = DateTime.MinValue,
-                })
-                .OrderBy(d => d.DisplayName)
-                .ToList();
+                    var dirs = roots
+                        .Where(Directory.Exists)
+                        .SelectMany(r => new DirectoryInfo(r).EnumerateDirectories())
+                        .Select(di => new MediaFile
+                        {
+                            FilePath    = di.FullName,
+                            IsDirectory = true,
+                            LastModified = di.LastWriteTime,
+                        })
+                        .OrderBy(d => d.DisplayName)
+                        .ToList();
+
+                    var files = roots
+                        .Where(Directory.Exists)
+                        .SelectMany(r => new[] { "*.ts", "*.m2ts", "*.mp4" }
+                            .SelectMany(pat => new DirectoryInfo(r).EnumerateFiles(pat)))
+                        .Select(fi => new MediaFile
+                        {
+                            FilePath    = fi.FullName,
+                            FileSize    = fi.Length,
+                            LastModified = fi.LastWriteTime,
+                        })
+                        .OrderByDescending(f => f.ParsedStartTime ?? f.LastModified)
+                        .ToList();
+
+                    return dirs.Concat(files).ToList();
+                });
+            }
+            catch (Exception ex)
+            {
+                StatusText.Text = $"読み込みエラー: {ex.Message}";
+                return;
+            }
+
+            _mediaFiles     = merged;
             _inEpgSearch    = false;
             _dirCurrentPage = 0;
             DirPathBox.Text = "";
