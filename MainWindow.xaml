@@ -119,7 +119,7 @@
                 </Grid.RowDefinitions>
 
                 <!-- アドレスバー -->
-                <Border Grid.Row="0" Background="#FF1A1A1A"
+                <Border x:Name="DirAddressBar" Grid.Row="0" Background="#FF1A1A1A"
                         BorderBrush="#FF444444" BorderThickness="0,0,0,1"
                         Padding="6,4">
                     <DockPanel>

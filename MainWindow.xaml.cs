@@ -103,49 +103,43 @@ public partial class MainWindow : Window
             DirList.ItemsSource = null;
             StatusText.Text = "ファイル一覧を読み込み中...";
 
-            List<MediaFile> merged;
-            try
+            var merged = await Task.Run(() =>
             {
-                merged = await Task.Run(() =>
+                static IEnumerable<T> TryEnum<T>(Func<IEnumerable<T>> fn)
                 {
-                    var dirs = roots
-                        .Where(Directory.Exists)
-                        .SelectMany(r => new DirectoryInfo(r).EnumerateDirectories())
-                        .Select(di => new MediaFile
-                        {
-                            FilePath    = di.FullName,
-                            IsDirectory = true,
-                            LastModified = di.LastWriteTime,
-                        })
-                        .OrderBy(d => d.DisplayName)
-                        .ToList();
+                    try { return fn(); } catch { return []; }
+                }
 
-                    var files = roots
-                        .Where(Directory.Exists)
-                        .SelectMany(r => new[] { "*.ts", "*.m2ts", "*.mp4" }
-                            .SelectMany(pat => new DirectoryInfo(r).EnumerateFiles(pat)))
-                        .Select(fi => new MediaFile
-                        {
-                            FilePath    = fi.FullName,
-                            FileSize    = fi.Length,
-                            LastModified = fi.LastWriteTime,
-                        })
-                        .OrderByDescending(f => f.ParsedStartTime ?? f.LastModified)
-                        .ToList();
+                var dirs = roots
+                    .SelectMany(r => TryEnum(() => new DirectoryInfo(r).EnumerateDirectories()))
+                    .Select(di => new MediaFile
+                    {
+                        FilePath    = di.FullName,
+                        IsDirectory = true,
+                        LastModified = di.LastWriteTime,
+                    })
+                    .OrderBy(d => d.DisplayName)
+                    .ToList();
 
-                    return dirs.Concat(files).ToList();
-                });
-            }
-            catch (Exception ex)
-            {
-                StatusText.Text = $"読み込みエラー: {ex.Message}";
-                return;
-            }
+                var files = roots
+                    .SelectMany(r => new[] { "*.ts", "*.m2ts", "*.mp4" }
+                        .SelectMany(pat => TryEnum(() => new DirectoryInfo(r).EnumerateFiles(pat))))
+                    .Select(fi => new MediaFile
+                    {
+                        FilePath    = fi.FullName,
+                        FileSize    = fi.Length,
+                        LastModified = fi.LastWriteTime,
+                    })
+                    .OrderByDescending(f => f.ParsedStartTime ?? f.LastModified)
+                    .ToList();
+
+                return dirs.Concat(files).ToList();
+            });
 
             _mediaFiles     = merged;
             _inEpgSearch    = false;
             _dirCurrentPage = 0;
-            DirPathBox.Text = "";
+            UpdateDirAddressBar();
             ShowDirPage();
             DirList.Focus();
             return;
@@ -202,6 +196,8 @@ public partial class MainWindow : Window
 
     private void UpdateDirAddressBar()
     {
+        var atRoot = string.IsNullOrEmpty(_currentDirPath);
+        DirAddressBar.Visibility = atRoot ? Visibility.Collapsed : Visibility.Visible;
         DirPathBox.Text = _currentDirPath;
         DirPathBox.CaretIndex = DirPathBox.Text.Length;
     }
