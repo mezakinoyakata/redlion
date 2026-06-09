@@ -482,7 +482,7 @@ public partial class MainWindow : Window
             var startTime = file.ParsedStartTime.Value;
             var progInfo = await Task.Run(() =>
                 new EpgDbReaderService(_settings.DbConnectionString)
-                    .GetEventInfoTextByStationAndTime(station, startTime));
+                    .GetEventInfoTextByStationAndTime(station, startTime, file.ParsedTitle));
 
             if (!ReferenceEquals(DirList.SelectedItem, file)) return;
 

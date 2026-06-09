@@ -11,7 +11,8 @@ public sealed class EpgDbReader
 
     public bool IsConfigured => !string.IsNullOrWhiteSpace(_connStr);
 
-    public string? GetEventInfoTextByStationAndTime(string stationName, DateTime startTime)
+    public string? GetEventInfoTextByStationAndTime(
+        string stationName, DateTime startTime, string? preferTitle = null)
     {
         if (!IsConfigured || string.IsNullOrEmpty(stationName)) return null;
         try
@@ -19,21 +20,70 @@ public sealed class EpgDbReader
             using var conn = new MySqlConnection(_connStr);
             conn.Open();
             using var cmd = conn.CreateCommand();
+            // 同局名で複数サービスが存在する場合に備え最大10件取得し、
+            // タイトル一致率でベストを選ぶ。
             cmd.CommandText =
-                "SELECT e.short_text, e.ext_text FROM events e " +
+                "SELECT e.short_text, e.ext_text, e.event_name FROM events e " +
                 "JOIN services s ON e.onid=s.onid AND e.tsid=s.tsid AND e.sid=s.sid " +
-                "WHERE s.service_name=@svc AND e.start_time >= @lo AND e.start_time <= @hi LIMIT 1";
+                "WHERE s.service_name=@svc AND e.start_time >= @lo AND e.start_time <= @hi " +
+                "ORDER BY e.start_time ASC LIMIT 10";
             cmd.Parameters.AddWithValue("@svc", stationName);
             cmd.Parameters.AddWithValue("@lo", startTime.AddMinutes(-2).ToString("yyyy-MM-dd HH:mm:ss"));
             cmd.Parameters.AddWithValue("@hi", startTime.AddMinutes(2).ToString("yyyy-MM-dd HH:mm:ss"));
             using var r = cmd.ExecuteReader();
-            if (!r.Read()) return null;
-            var shortText = r.IsDBNull(0) ? "" : r.GetString(0);
-            var extText   = r.IsDBNull(1) ? "" : r.GetString(1);
-            if (string.IsNullOrEmpty(shortText) && string.IsNullOrEmpty(extText)) return null;
-            return string.IsNullOrEmpty(extText)   ? shortText
-                 : string.IsNullOrEmpty(shortText) ? extText
-                 : shortText + "\n" + extText;
+
+            var rows = new List<(string Short, string Ext, string Name)>();
+            while (r.Read())
+                rows.Add((r.IsDBNull(0) ? "" : r.GetString(0),
+                          r.IsDBNull(1) ? "" : r.GetString(1),
+                          r.IsDBNull(2) ? "" : r.GetString(2)));
+            r.Close();
+
+            if (rows.Count == 0) return null;
+
+            var best = rows[0];
+            if (!string.IsNullOrEmpty(preferTitle) && rows.Count > 1)
+            {
+                // 同局名マルチサービス対策: タイトルの双方向包含でベスト候補を選ぶ
+                var match = rows.FirstOrDefault(row =>
+                    row.Name.Contains(preferTitle, StringComparison.OrdinalIgnoreCase) ||
+                    preferTitle.Contains(row.Name, StringComparison.OrdinalIgnoreCase));
+                if (match != default) best = match;
+            }
+
+            static bool HasCommonTrigram(string a, string b)
+            {
+                for (int i = 0; i + 2 < a.Length; i++)
+                    if (b.Contains(a.Substring(i, 3), StringComparison.OrdinalIgnoreCase))
+                        return true;
+                return false;
+            }
+
+            // ① ファイルタイトルとEPGイベント名が全く無関係なら返さない
+            //    （同局名マルチサービスの誤マッチ対策）
+            if (!string.IsNullOrEmpty(preferTitle))
+            {
+                if (string.IsNullOrEmpty(best.Name)) return null;
+                if (!HasCommonTrigram(preferTitle, best.Name) &&
+                    !HasCommonTrigram(best.Name, preferTitle))
+                    return null;
+            }
+
+            if (string.IsNullOrEmpty(best.Short) && string.IsNullOrEmpty(best.Ext)) return null;
+
+            // ② イベント名と説明文のトリグラムが全く一致しない場合は説明文が別番組の
+            //    データである可能性が高いため返さない（event_name に一致しても ext_text
+            //    が破損している場合の誤表示を防ぐ）
+            var desc = (best.Short + " " + best.Ext).Trim();
+            if (!string.IsNullOrEmpty(best.Name) && !string.IsNullOrEmpty(desc))
+            {
+                if (!HasCommonTrigram(best.Name, desc) && !HasCommonTrigram(desc, best.Name))
+                    return null;
+            }
+
+            return string.IsNullOrEmpty(best.Ext)   ? best.Short
+                 : string.IsNullOrEmpty(best.Short) ? best.Ext
+                 : best.Short + "\n" + best.Ext;
         }
         catch { return null; }
     }
