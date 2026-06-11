@@ -92,6 +92,7 @@
                 <MenuItem Header="パス設定..." Click="Settings_Click" Foreground="#FF1E1E1E"/>
             </MenuItem>
             <MenuItem x:Name="RefreshMenuItem" Header="更新 (F5)" Click="Refresh_Click" Foreground="#FFE0E0E0"/>
+            <MenuItem Header="番組表" Click="EpgGuide_Click" Foreground="#FFE0E0E0"/>
         </Menu>
 
         <!-- ステータスバー -->

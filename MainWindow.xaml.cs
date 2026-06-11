@@ -638,6 +638,19 @@ public partial class MainWindow : Window
 
     private void Refresh_Click(object sender, RoutedEventArgs e) => LoadMediaFiles();
 
+    private EpgGuideWindow? _guideWindow;
+
+    private void EpgGuide_Click(object sender, RoutedEventArgs e)
+    {
+        if (_guideWindow is { IsLoaded: true })
+        {
+            _guideWindow.Activate();
+            return;
+        }
+        _guideWindow = new EpgGuideWindow(_settings.DbConnectionString);
+        _guideWindow.Show();
+    }
+
     private void Settings_Click(object sender, RoutedEventArgs e)
     {
         var win = new SettingsWindow(_settings);

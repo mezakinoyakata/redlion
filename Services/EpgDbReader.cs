@@ -152,6 +152,56 @@ public sealed class EpgDbReader
         catch (Exception ex) { LastSearchError = ex.Message; return []; }
     }
 
+    /// <summary>
+    /// 番組表用: 指定時間範囲の全TVサービスのイベントを取得する。
+    /// 過去データも events テーブルに残っている分はすべて取得可能。
+    /// 表示順は 地デジ→BS→CS、リモコンキー順。本文 (short/ext) は重いので
+    /// 含めない（詳細表示時に GetEventInfoText で個別取得する）。
+    /// </summary>
+    public List<EpgEvent> GetGuideEvents(DateTime rangeStart, DateTime rangeEnd)
+    {
+        if (!IsConfigured) return [];
+        try
+        {
+            using var conn = new MySqlConnection(_connStr);
+            conn.Open();
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText =
+                "SELECT e.onid, e.tsid, e.sid, e.event_id, s.service_name, " +
+                "e.start_time, e.duration_sec, e.event_name, e.free_ca_flag, g.nibble_l1 " +
+                "FROM events e " +
+                "JOIN services s ON e.onid=s.onid AND e.tsid=s.tsid AND e.sid=s.sid " +
+                "LEFT JOIN event_genres g ON g.onid=e.onid AND g.tsid=e.tsid " +
+                "AND g.sid=e.sid AND g.event_id=e.event_id AND g.seq=0 " +
+                "WHERE e.start_time >= @lo AND e.start_time < @hi " +
+                "AND s.service_type=1 AND s.partial_reception=0 " +
+                "ORDER BY " +
+                "CASE WHEN e.onid>=30848 THEN 0 WHEN e.onid=4 THEN 1 " +
+                "WHEN e.onid IN (6,7) THEN 2 ELSE 3 END, " +
+                "s.remote_control_key, e.onid, e.tsid, e.sid, e.start_time";
+            cmd.Parameters.AddWithValue("@lo", rangeStart.ToString("yyyy-MM-dd HH:mm:ss"));
+            cmd.Parameters.AddWithValue("@hi", rangeEnd.ToString("yyyy-MM-dd HH:mm:ss"));
+            using var r = cmd.ExecuteReader();
+            var list = new List<EpgEvent>();
+            while (r.Read())
+                list.Add(new EpgEvent
+                {
+                    ONID          = (ushort)r.GetInt32(0),
+                    TSID          = (ushort)r.GetInt32(1),
+                    SID           = (ushort)r.GetInt32(2),
+                    EventID       = (ushort)r.GetInt32(3),
+                    ServiceName   = r.IsDBNull(4) ? "" : r.GetString(4),
+                    StartTime     = r.IsDBNull(5) ? null : (DateTime?)r.GetDateTime(5),
+                    DurationSec   = r.IsDBNull(6) ? null : (uint?)r.GetInt32(6),
+                    EventName     = r.IsDBNull(7) ? "" : r.GetString(7),
+                    FreeCAFlag    = (byte)(r.IsDBNull(8) ? 0 : r.GetInt32(8)),
+                    ContentNibble = r.IsDBNull(9) ? null : (byte?)r.GetInt32(9),
+                });
+            return list;
+        }
+        catch { return []; }
+    }
+
     // a の3文字部分列が b に1つでも含まれるか
     internal static bool HasCommonTrigram(string a, string b)
     {
