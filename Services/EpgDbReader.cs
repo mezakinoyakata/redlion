@@ -51,14 +51,6 @@ public sealed class EpgDbReader
                 if (match != default) best = match;
             }
 
-            static bool HasCommonTrigram(string a, string b)
-            {
-                for (int i = 0; i + 2 < a.Length; i++)
-                    if (b.Contains(a.Substring(i, 3), StringComparison.OrdinalIgnoreCase))
-                        return true;
-                return false;
-            }
-
             // ① ファイルタイトルとEPGイベント名が全く無関係なら返さない
             //    （同局名マルチサービスの誤マッチ対策）
             if (!string.IsNullOrEmpty(preferTitle))
@@ -158,6 +150,15 @@ public sealed class EpgDbReader
             return ReadEvents(r2);
         }
         catch (Exception ex) { LastSearchError = ex.Message; return []; }
+    }
+
+    // a の3文字部分列が b に1つでも含まれるか
+    internal static bool HasCommonTrigram(string a, string b)
+    {
+        for (int i = 0; i + 2 < a.Length; i++)
+            if (b.Contains(a.Substring(i, 3), StringComparison.OrdinalIgnoreCase))
+                return true;
+        return false;
     }
 
     private static string EscapeRegex(string s) =>
