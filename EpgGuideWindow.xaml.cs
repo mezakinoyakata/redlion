@@ -54,10 +54,34 @@ public partial class EpgGuideWindow : Window
     public EpgGuideWindow(string dbConnectionString)
     {
         InitializeComponent();
+        DarkTitleBar.Apply(this);
         _reader = new EpgDbReader(dbConnectionString);
         _day = TodayBase();
         DateBox.SelectedDate = _day;
         Loaded += (_, _) => LoadGuide();
+    }
+
+    // ─── 水平ホイール (MX Master サムホイール等 / WM_MOUSEHWHEEL) ─────────
+
+    private const int WM_MOUSEHWHEEL = 0x020E;
+
+    protected override void OnSourceInitialized(EventArgs e)
+    {
+        base.OnSourceInitialized(e);
+        if (PresentationSource.FromVisual(this) is System.Windows.Interop.HwndSource src)
+            src.AddHook(WndProc);
+    }
+
+    private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
+    {
+        if (msg == WM_MOUSEHWHEEL)
+        {
+            // 上位ワードが delta（右回転で正）
+            int delta = (short)((wParam.ToInt64() >> 16) & 0xFFFF);
+            MainScroll.ScrollToHorizontalOffset(MainScroll.HorizontalOffset + delta);
+            handled = true;
+        }
+        return IntPtr.Zero;
     }
 
     /// <summary>「今日」の番組表基準日（午前4時前なら前日扱い）。</summary>

@@ -11,6 +11,7 @@ public partial class SettingsWindow : Window
     public SettingsWindow(AppSettings current)
     {
         InitializeComponent();
+        DarkTitleBar.Apply(this);
         Settings = new AppSettings
         {
             MaxRecItems        = current.MaxRecItems,
