@@ -63,15 +63,9 @@ public sealed class EpgDbReader
 
             if (string.IsNullOrEmpty(best.Short) && string.IsNullOrEmpty(best.Ext)) return null;
 
-            // ② イベント名と説明文のトリグラムが全く一致しない場合は説明文が別番組の
-            //    データである可能性が高いため返さない（event_name に一致しても ext_text
-            //    が破損している場合の誤表示を防ぐ）
-            var desc = (best.Short + " " + best.Ext).Trim();
-            if (!string.IsNullOrEmpty(best.Name) && !string.IsNullOrEmpty(desc))
-            {
-                if (!HasCommonTrigram(best.Name, desc) && !HasCommonTrigram(desc, best.Name))
-                    return null;
-            }
+            // 説明文はタイトル文字列を含まないことが普通にある（あかね噺の説明に
+            // 「あかね噺」が出てこない等）ため、event_name と説明文の照合はしない。
+            // 2026-06 の SyncCacheToDbAsync 汚染データは DB 側でクリア済み。
 
             return string.IsNullOrEmpty(best.Ext)   ? best.Short
                  : string.IsNullOrEmpty(best.Short) ? best.Ext
