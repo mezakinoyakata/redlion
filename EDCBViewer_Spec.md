@@ -27,6 +27,7 @@ EDCBViewer/
 ├── EpgGuideWindow.xaml / .cs  番組表ウィンドウ
 ├── SettingsWindow.xaml / .cs  設定ダイアログ
 ├── DarkTitleBar.cs            タイトルバーのダークモード化（DWM API）
+├── HorizontalWheel.cs         水平ホイール → 横スクロール変換（WM_MOUSEHWHEEL フック）
 ├── AppSettings.cs             設定管理（JSON 永続化）
 ├── App.xaml / .cs             アプリエントリポイント
 ├── GlobalUsings.cs
@@ -219,6 +220,10 @@ EPG 全文検索モード中はページング無効（最大 200 件を一括�
 ## UI 共通
 
 - 全ウィンドウのタイトルバーは `DwmSetWindowAttribute(DWMWA_USE_IMMERSIVE_DARK_MODE)` でダークモード描画（`DarkTitleBar.Apply`）
+- 水平ホイール（WM_MOUSEHWHEEL、MX Master のサムホイール等）対応（`HorizontalWheel.Attach`）。
+  WPF は水平ホイール未対応のため WndProc フックで変換する
+  - メインウィンドウ: マウスカーソル直下の横スクロール可能な ScrollViewer をスクロール
+  - 番組表: 常にメイングリッドをスクロール（ヘッダー・詳細ペイン上でも効く）
 
 ---
 

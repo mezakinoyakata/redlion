@@ -44,6 +44,7 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
         DarkTitleBar.Apply(this);
+        HorizontalWheel.Attach(this);
         _recordingIndex = new RecordingIndexService(_settings.DbConnectionString);
         _epgReader      = new EpgDbReaderService(_settings.DbConnectionString);
         _dirRoot        = "";
