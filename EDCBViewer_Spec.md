@@ -3,7 +3,7 @@
 ## 概要
 
 EDCB（EpgTimerSrv）と連携する Windows WPF アプリケーション。  
-録画済みファイルの閲覧・再生、EPG 全文検索、番組表表示を提供する。
+録画済みファイルの閲覧・再生・検索、番組表表示を提供する。
 
 ---
 
@@ -158,30 +158,18 @@ EDCB RecName_Macro.DLL フォーマット
 
 ---
 
-## 絞込・全文検索
+## ファイル検索（絞込）
 
-### ファイル絞込（通常モード）
+**検索対象はファイルのみ**（EPG は検索しない）。
 
-絞込ボックスに文字を入力するとリアルタイムでファイル名（ParsedTitle・ParsedStation）を部分一致フィルタする。
+絞込ボックスにキーワードを入力して **Enter** を押すと、ファイル名（ParsedTitle・ParsedStation）を部分一致フィルタする。
 スペース区切りは AND 条件（全語一致）。フォルダは常時表示（フィルタ対象外）。
 
-### EPG 全文検索（Enter）
-
-絞込ボックスにキーワードを入力して **Enter** を押すと EPG 全文検索モードに切り替わる。
-
-```
-EpgDbReader.SearchEvents(keyword)
-  ① フレーズ検索: 語を [\s　]* で連結した REGEXP パターンで
-     event_name / short_text / ext_text を検索（隣接一致のみ。
-     キャスト列で別人名が並ぶ場合の誤ヒットを防ぐ）
-  ② ①が 0 件なら同一フィールド内 AND LIKE 検索にフォールバック
-  → 最大 200 件を start_time DESC で返す
-```
-
-- 結果は番組名・放送局・放送日時でリストに表示
-- 番組を選択すると右ペインに short_text + ext_text を表示
+- 一致ゼロの場合は「一致するファイルがありません」を表示（EPG へのフォールバックはしない。
+  以前は 0 件時に EPG 全文検索へ自動フォールバックしていたが、2026-07-11 に撤去）
 - 絞込ボックスをクリアするとファイルブラウズモードに戻る
-- 全文検索中はページングボタンは無効
+
+※ `EpgDbReader.SearchEvents`（REGEXP フレーズ検索 → AND LIKE フォールバック）は実装として残っているが、UI からは呼ばれていない。
 
 ---
 
@@ -199,7 +187,6 @@ EpgDbReader.SearchEvents(keyword)
 
 ディレクトリタブのみ。First / Prev / Next / Last ボタンおよびキーボードで操作。1ページあたりの件数は MaxRecItems 設定値。
 
-EPG 全文検索モード中はページング無効（最大 200 件を一括表示）。
 
 ---
 
@@ -211,7 +198,7 @@ EPG 全文検索モード中はページング無効（最大 200 件を一括�
 | Home / End | 先頭/末尾ページ |
 | F5 | フォルダ再読込 |
 | Enter（リスト選択中） | ファイル再生 / フォルダ移動 |
-| Enter（絞込ボックス） | EPG 全文検索実行 |
+| Enter（絞込ボックス） | ファイル絞込実行 |
 | ↑ / ↓ | リスト選択移動 |
 | 印字可能文字（リスト選択中） | 絞込ボックスにフォーカスを移して入力 |
 
@@ -242,7 +229,7 @@ EPG 全文検索モード中はページング無効（最大 200 件を一括�
 | `GetEventInfoText(onid, tsid, sid, eventId)` | PK で events を検索し short_text + ext_text を返す |
 | `GetEventInfoTextByStationAndTime(station, startTime, preferTitle)` | 放送局名 + 開始時刻 ±2分で検索。preferTitle とのトリグラム照合で誤マッチを除外 |
 | `GetGuideEvents(rangeStart, rangeEnd)` | 番組表用。時間範囲の全TVサービスのイベント（ジャンル付き、本文なし）を表示順で返す |
-| `SearchEvents(keyword, limit=200)` | 全文検索。REGEXP フレーズ → AND LIKE フォールバック |
+| `SearchEvents(keyword, limit=200)` | 全文検索。REGEXP フレーズ → AND LIKE フォールバック（現在 UI 未使用） |
 | `HasCommonTrigram(a, b)` | internal。3文字部分列の共通有無（テストから参照） |
 
 ### DB ビュー

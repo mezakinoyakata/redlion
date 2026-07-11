@@ -358,7 +358,7 @@ public partial class MainWindow : Window
         ShowDirPage();
     }
 
-    private async void DirSearchBox_KeyDown(object sender, KeyEventArgs e)
+    private void DirSearchBox_KeyDown(object sender, KeyEventArgs e)
     {
         if (e.Key != Key.Enter) return;
         e.Handled = true;
@@ -374,43 +374,12 @@ public partial class MainWindow : Window
             return;
         }
 
-        // まずファイルフィルタを適用（スペース区切り AND）
-        var qTerms = q.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        var fileHits = _mediaFiles
-            .Where(f => !f.IsDirectory && qTerms.All(t =>
-                f.ParsedTitle.Contains(t, StringComparison.OrdinalIgnoreCase) ||
-                f.ParsedStation.Contains(t, StringComparison.OrdinalIgnoreCase)))
-            .Any();
-
+        // ファイルフィルタを適用（スペース区切り AND）。検索対象はファイルのみ（EPG には飛ばない）
         _inEpgSearch      = false;
-        _fileFilterActive = fileHits;
+        _fileFilterActive = true;
         _dirCurrentPage   = 0;
         ShowDirPage();
 
-        if (fileHits)
-        {
-            if (DirList.Items.Count > 0) DirList.SelectedIndex = 0;
-            DirList.Focus();
-            return;
-        }
-
-        // ファイルが見つからなければ EPG 全文検索にフォールバック
-        StatusText.Text = "ファイルが見つかりません。EPG を検索中...";
-        _inEpgSearch = true;
-        var results = await Task.Run(() => _epgReader.SearchEvents(q));
-        DirList.ItemsSource = results.Select(ev => new EpgResultItem(ev)).ToList();
-        DirCountText.Text = $"{results.Count:#,0} 件";
-        DirPageLabel.Text = "";
-        DirFirstPageButton.IsEnabled = false;
-        DirPrevPageButton.IsEnabled  = false;
-        DirNextPageButton.IsEnabled  = false;
-        DirLastPageButton.IsEnabled  = false;
-        if (_epgReader.LastSearchError != null)
-            StatusText.Text = $"EPG検索エラー: {_epgReader.LastSearchError}";
-        else
-            StatusText.Text = results.Count > 0
-                ? $"{results.Count:#,0} 件の番組が見つかりました"
-                : "一致するファイル・番組が見つかりません";
         if (DirList.Items.Count > 0) DirList.SelectedIndex = 0;
         DirList.Focus();
     }
