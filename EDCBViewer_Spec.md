@@ -3,7 +3,7 @@
 ## 概要
 
 EDCB（EpgTimerSrv）と連携する Windows WPF アプリケーション。  
-録画済み一覧・予約一覧の閲覧、番組情報表示、録画ファイル再生を提供する。
+録画済みファイルの閲覧・再生・検索、番組表表示を提供する。
 
 ---
 
@@ -13,8 +13,9 @@ EDCB（EpgTimerSrv）と連携する Windows WPF アプリケーション。
 |---|---|
 | 場所 | `C:\work\CC\EDCBViewer` |
 | フレームワーク | .NET 9.0 / WPF / Windows |
-| 依存パッケージ | MySqlConnector 2.4.0（録画インデックス・EPG DB 共用）、Microsoft.Data.Sqlite 9.0.0（csproj 残存・未使用、削除候補） |
+| 依存パッケージ | MySqlConnector 2.4.0（EPG DB 接続用）、Microsoft.Data.Sqlite 9.0.0（未使用・削除候補） |
 | ビルド | `dotnet build -c Release`（`dotnet publish` は使わない、`-c Release` 必須） |
+| テスト | `dotnet test Tests\EDCBViewer.Tests.csproj -c Release`（xUnit） |
 
 ---
 
@@ -22,23 +23,30 @@ EDCB（EpgTimerSrv）と連携する Windows WPF アプリケーション。
 
 ```
 EDCBViewer/
-├── MainWindow.xaml / .cs      メインウィンドウ（録画・予約・ディレクトリタブ）
+├── MainWindow.xaml / .cs      メインウィンドウ（ディレクトリタブ）
+├── EpgGuideWindow.xaml / .cs  番組表ウィンドウ
 ├── SettingsWindow.xaml / .cs  設定ダイアログ
+├── DarkTitleBar.cs            タイトルバーのダークモード化（DWM API）
+├── HorizontalWheel.cs         水平ホイール → 横スクロール変換（WM_MOUSEHWHEEL フック）
 ├── AppSettings.cs             設定管理（JSON 永続化）
 ├── App.xaml / .cs             アプリエントリポイント
 ├── GlobalUsings.cs
 ├── Models/
 │   ├── EpgEvent.cs            EPG イベントモデル
-│   ├── RecFileInfo.cs         録画済み情報モデル
-│   ├── ReserveData.cs         予約情報モデル
 │   ├── MediaFile.cs           ディレクトリタブ用メディアファイル
-│   └── RecordingIndexEntry.cs 録画インデックスエントリ
+│   ├── RecFileInfo.cs         未使用・削除候補
+│   ├── ReserveData.cs         未使用・削除候補
+│   └── RecordingIndexEntry.cs 未使用・削除候補
 ├── Parsers/
-│   ├── EmwuiClient.cs         EMWUI HTTP API クライアント
+│   ├── EmwuiClient.cs         未使用・削除候補
 │   └── EncodingDetector.cs    文字コード検出
-└── Services/
-    ├── EpgDbReader.cs         MySQL EPG DB 読み取り
-    └── RecordingIndex.cs      MySQL 録画インデックス DB 読み取り
+├── Services/
+│   ├── EpgDbReader.cs         MySQL EPG DB 読み取り・全文検索・番組表クエリ
+│   └── RecordingIndex.cs      未使用・削除候補
+└── Tests/
+    ├── EDCBViewer.Tests.csproj  xUnit テストプロジェクト
+    ├── MediaFileTests.cs        ファイル名パースのテスト
+    └── EpgTrigramTests.cs       トリグラム判定のテスト
 ```
 
 ---
@@ -51,104 +59,142 @@ EDCBViewer/
 
 | プロパティ | 説明 | デフォルト |
 |---|---|---|
-| EmwuiBaseUrl | EpgTimerSrv の EMWUI URL（予約一覧・番組情報フォールバック用）例: `http://5600x:5510` | `""` |
-| MaxRecItems | 録画済み・予約・ディレクトリ各タブの1ページ表示件数 | `500` |
-| RecordingFolder | 録画フォルダ（追っかけ再生時のファイル探索用）例: `\\5600x\d\PT2` | `\\5600x\d\PT2` |
+| MaxRecItems | ディレクトリタブの1ページ表示件数 | `500` |
 | PlayerPath | 動画プレイヤー実行ファイルのパス | MPC-BE のパス |
-| EncodedFolder | ディレクトリタブの起点フォルダ | `""` |
-| DbConnectionString | MySQL 接続文字列（録画インデックス・EPG DB 共用）例: `Server=5600x;Database=edcbviewer;Uid=edcb;Pwd=xxx` | `""` |
+| EncodedFolders | 起点フォルダのリスト（複数可、追加/削除 UI あり） | `[]` |
+| DbConnectionString | MySQL 接続文字列（EPG DB 接続用）例: `Server=5600x;Database=edcbviewer;Uid=edcb;Pwd=xxx` | `""` |
 
 ### AppSettings.cs に存在するが UI に出ない項目
 
 | プロパティ | 状態 |
 |---|---|
+| EncodedFolder | 旧設定（単一起点）。初回ロード時に EncodedFolders へ移行 |
+| RecordingFolder | 未使用（追っかけ再生機能の名残） |
 | RefreshIntervalSeconds | 自動更新無効化のため未使用 |
-| EpgDataFolder | `*_epg.dat` 用として残存・未使用 |
-
-### ToUncPath()
-
-`EmwuiBaseUrl` のホスト名を使い、サーバーローカルパス（例: `D:\PT2\foo.ts`）を UNC パス（`\\5600x\d\PT2\foo.ts`）に変換する。すでに UNC パスの場合はそのまま返す。録画ファイル再生時に使用。
+| EpgDataFolder | 未使用 |
 
 ---
 
-## データ取得フロー
+## ディレクトリタブ
 
-### 録画済み一覧
+起点フォルダ（`EncodedFolders`、複数可）を起点に、フォルダを移動しながら `.ts` / `.m2ts` / `.mp4` ファイルを閲覧・再生する。
+
+### 複数起点のマージ表示
+
+- ルート表示（パス未指定）時は全起点フォルダの直下フォルダ・ファイルをマージして表示
+- 列挙は起点 ×拡張子パターンごとに try/catch で隔離（`TryList`、eager評価）。
+  一部の SMB 共有が落ちていても他の起点は表示される
+- 初回ロードで 0 件だった起点がある場合、5 秒後に自動で再読込
+  （SMB コールドスタートのタイムアウト対策）
+
+### アドレスバー
+
+- **パスボックス**（編集可能）: 現在のフォルダパスを表示。Enter で移動。存在しないパスは拒否して元に戻す
+- **… ボタン**: `OpenFolderDialog` で任意フォルダへ移動
+
+### ファイル一覧
+
+- カレントディレクトリのサブフォルダ + `.ts`/`.m2ts`/`.mp4` ファイルのみ表示（再帰列挙なし）
+- サブフォルダは `📁 フォルダ名` 形式でリスト上部に名前順表示
+- ファイルは ParsedStartTime 降順（解析できない場合は LastModified 降順）
+- ダブルクリックまたは Enter でサブフォルダに移動 / ファイルを再生
+
+### ファイル名パース（MediaFile）
+
+EDCB RecName_Macro.DLL フォーマット
+`{Title} ({ServiceName} {YYYY}-{MM}-{DD}-{HHMM}-{曜日})` を正規表現で解析し、
+`ParsedTitle` / `ParsedStation` / `ParsedStartTime` を得る。
+
+- EDCB の継続録画サフィックス `-(N)`（例: `〜)-(1).ts`）に対応。
+  タイトル・局・日時は本編と同じ値になり、リスト表示名に `(続きN)` を付加して区別する
+- パターン不一致のファイルはファイル名をそのままタイトルとして扱う
+
+### ファイル選択時の情報表示
+
+ファイル名パース結果を即時表示した後、非同期で MySQL を検索して番組情報を補完する。
 
 ```
-RecordingIndex.LoadAll()
-  → MySQL recordings テーブル全件取得（ORDER BY start_time DESC）
-  → _allRecList に保持（検索・ソート用）
-  → 先頭 MaxRecItems 件をページ表示
-
-DbConnectionString 未設定 → 録画一覧は空
+① ファイル名パース結果（ParsedTitle / ParsedStation / ParsedStartTime）を右ペインに即表示
+② ParsedStation と ParsedStartTime が取得できた場合:
+     EpgDbReader.GetEventInfoByStationAndTime(station, startTime, preferTitle: ParsedTitle)
+       → events JOIN services WHERE service_name=@svc AND start_time BETWEEN ±2分（最大10件）
+       → 複数ヒット時は event_name と preferTitle の双方向包含でベスト候補を選択
+       → preferTitle と event_name にトリグラム（3文字部分列）の共通がなければ
+          別番組とみなして非表示（同局名マルチサービスの誤マッチ対策）
+       → タイトル表示を EPG 側の正式タイトル（event_name）に差し替える。
+          ファイル名では Title2 マクロで除去されている [4K][HDR][字] 等のタグが見える
+          （2026-07-16 導入。一覧のファイル名列はファイル名のまま）
+       → short_text + ext_text を番組情報として表示（両方空なら番組情報欄のみ非表示）
+③ ②がヒットしない、または ParsedStation/ParsedStartTime 未取得
+   → タイトルはファイル名パース結果のまま、番組情報欄は非表示
 ```
 
-### 予約一覧
-
-```
-EmwuiClient.GetReserveInfoAsync()
-  → GET /api/EnumReserveInfo?count=500&index=M（バッチ取得）
-  → XML 解析 → List<ReserveData>
-
-EmwuiBaseUrl 未設定 → 予約一覧は空
-```
-
-### 番組情報（録画済み選択時）
-
-```
-① _programInfoCache（ConcurrentDictionary<uint, string> メモリキャッシュ）ヒット → 即表示
-② info.ProgramInfo（MySQL recordings.program_info カラム）非空 → 表示
-③ EpgDbReader.GetEventInfoText(onid, tsid, sid, event_id)
-     → MySQL events テーブル検索 → ヒット → キャッシュに追加して表示
-④ すべて空 → 番組情報なしで終了（EMWUI フォールバックなし）
-```
-
-### 番組情報（予約選択時）
-
-```
-data.ProgramInfo が null（未取得）の場合のみ取得:
-① EpgDbReader.GetEventInfoText(onid, tsid, sid, event_id)
-     → MySQL events テーブル検索
-② ① が空 かつ EmwuiBaseUrl 設定済み
-     → EmwuiClient.GetEventInfoTextAsync()
-       GET /api/EnumEventInfo?basic=0&id=ONID-TSID-SID-EID
-取得結果を data.ProgramInfo に保存（再選択時は再取得しない）
-```
-
-### proginfo_cache.json
-
-- パス: `%LOCALAPPDATA%\EDCBViewer\proginfo_cache.json`
-- 起動時（クラス静的初期化）にディスクから読み込み
-- アプリ終了時（`Window_Closing`）にディスクへ保存
-- `recordings.program_info` および MySQL events テーブルから取得した番組情報を蓄積
+> イベント名と説明文の照合は行わない。説明文がタイトル文字列を含まない番組が
+> 普通に存在するため（過剰防御で正常データを抑制した実績あり）。
 
 ---
 
-## 検索機能
+## 番組表（EpgGuideWindow）
 
-### 録画済みタブ
+メニュー「番組表」から開く（単一インスタンス）。MySQL の events テーブルを直接参照するため、
+**EpgTimerSrv の過去番組表（EnumPgArc）と異なり、テーブルに残っている限り過去のどの日付でも表示できる。**
+過去データの蓄積は EpgSqliteExporter の稼働開始時点から。
 
-| モード | 動作 |
-|---|---|
-| 通常 | 半角スペースで AND 分割。全角スペースはフィールド側のみ除去。タイトル・放送局・番組情報（キャッシュ）・コメントを検索 |
-| フレーズ優先 | スペース区切りトークンの連結形がデータ内に存在する場合、フレーズまたは元クエリいずれかに一致するものを優先 |
-| 正規表現 | RegexCheck チェック時。同フィールドに対して正規表現マッチ |
-| 日付フィルタ | `<=2026/05/01` 等の演算子付き日付文字列で StartTime の日付を比較（`<=` `>=` `<` `>` `=` 対応） |
+### レイアウト
 
-- 検索実行: 検索ボックスで Enter またはボタン押下
-- 検索クリア: 検索ボックスを空にすると自動でページビューに戻る
-- 検索中はソートが有効なら全件ページモード維持
+- 04:00 起点の 24 時間グリッド（縦=時間 3px/分、横=サービス 170px/列）
+- 列順: 地デジ（onid≥30848）→ BS（onid=4）→ CS（onid=6,7）→ その他、リモコンキー順
+- 対象サービス: `service_type=1 AND partial_reception=0`（ワンセグ・データ放送等を除外）
+- ジャンル大分類（event_genres.nibble_l1、seq=0）でブロックを色分け
+- 表示日が今日の場合は現在時刻に赤ラインを表示し、その位置へ自動スクロール
+- サービス名ヘッダー（横）・時刻軸（縦）はメイングリッドとスクロール同期
 
-### 予約タブ
+### ナビゲーション
 
-- タイトル・放送局・番組情報に対して部分一致（大小文字無視）
-- 日付フィルタ同様に対応
+- 前日 / 今日 / 翌日 ボタン、DatePicker による日付ジャンプ
+- 水平ホイール（WM_MOUSEHWHEEL、MX Master のサムホイール等）で横スクロール
 
-### ディレクトリタブ
+### 詳細表示
 
-- ParsedTitle・ParsedStation に対して部分一致
-- フォルダは常時表示（フィルタ対象外）
+- 番組ブロックをクリックすると右ペインにタイトル・放送局・放送日時を表示
+- 本文（short_text + ext_text）は一覧クエリに含めず、クリック時に
+  `GetEventInfoText(onid, tsid, sid, event_id)` で遅延取得する
+
+---
+
+## ファイル検索（絞込）
+
+**検索結果に表示するのはファイルのみ**（EPG イベントは表示しない）。
+
+絞込ボックスにキーワードを入力して **Enter** を押すと、**現在のスコープ以下を再帰的に**検索する。
+
+- スコープ: ルート表示中なら全起点フォルダ以下、フォルダ内ならそのフォルダ以下（サブフォルダ含む）
+- スペース区切りは AND 条件（全語一致）
+- マッチ判定は次の **2 系統の OR**（2026-07-16 導入）:
+  1. **ファイル名一致**: ParsedTitle・ParsedStation の部分一致（パース不能なファイル名は
+     全体が ParsedTitle になる）。両辺を NFKC 正規化するため全角半角・大文字小文字は無視
+     （「4K」で「４Ｋ」がヒット）
+  2. **EPG 照合**: EPG DB の番組名＋説明文（event_name / short_text / ext_text）に全語一致した
+     イベントの (service_name, start_time) と、ファイルの (ParsedStation, ParsedStartTime) が
+     分精度で一致すれば結果に含める（`EpgDbReader.GetMatchingEventKeys`）。
+     **EDCB の Title2 マクロは `[4K]` `[HDR]` `[字]` 等のタグをファイル名から除去するため、
+     これらのタグはファイル名検索では原理的にヒットしない**（「HDR」0 件バグの原因）。
+     DB 照合順序 utf8mb4_0900_ai_ci により DB 側も全角半角・大文字小文字を無視する。
+     DbConnectionString 未設定・DB 接続不可の場合はファイル名一致のみで動作
+- 検索結果は**ファイルのみ表示**（フォルダは表示しない）。ソート・ページング有効
+- 一致ゼロの場合は「一致するファイルがありません」を表示（EPG イベントへのフォールバック表示はしない。
+  以前は 0 件時に EPG 全文検索の**イベント**を表示していたが、2026-07-11 に撤去。
+  同日、検索対象を「表示中フォルダ直下のみ」から「スコープ以下の再帰」に変更）
+- 絞込ボックスをクリアするとファイルブラウズモードに戻る
+
+※ `EpgDbReader.SearchEvents`（REGEXP フレーズ検索 → AND LIKE フォールバック）は実装として残っているが、UI からは呼ばれていない。
+
+### 起点フォルダの自動再読込
+
+起動直後にネットワーク未接続などで読み込めなかった起点フォルダがある場合、5 秒後に自動再読込する。
+**リトライは最大 3 回**（空フォルダと未接続を区別できないため、無制限だと空の起点フォルダ 1 つで
+5 秒ごとの再読込が永久に続く）。手動リフレッシュ（F5・更新ボタン・設定変更・ナビゲート）で回数はリセット。
+検索モード中（絞込適用中）は自動再読込しない。
 
 ---
 
@@ -158,21 +204,14 @@ data.ProgramInfo が null（未取得）の場合のみ取得:
 
 | タブ | ソート可能列 |
 |---|---|
-| 録画済み | タイトル・放送局・開始日時・時間・状態 |
-| 予約録画 | タイトル・放送局・開始日時・時間・状態 |
 | ディレクトリ | ファイル名・放送局・放送日時 |
 
 ---
 
 ## ページング
 
-全タブ共通。First / Prev / Next / Last ボタンおよびキーボードで操作。1ページあたりの件数は MaxRecItems 設定値。
+ディレクトリタブのみ。First / Prev / Next / Last ボタンおよびキーボードで操作。1ページあたりの件数は MaxRecItems 設定値。
 
-| タブ | ページ数の基準 |
-|---|---|
-| 録画済み | MySQL recordings 全件数 |
-| 予約録画 | EMWUI から取得した全予約数 |
-| ディレクトリ | カレントディレクトリのファイル数 |
 
 ---
 
@@ -180,84 +219,23 @@ data.ProgramInfo が null（未取得）の場合のみ取得:
 
 | キー | 動作 |
 |---|---|
-| PageDown / PageUp | アクティブタブの次/前ページ |
-| Home / End | アクティブタブの先頭/末尾ページ |
-| Ctrl+1 / 2 / 3 | 録画済み / 予約録画 / ディレクトリタブに切替 |
-| F5 | 更新（ディレクトリタブはカレントフォルダ再読込） |
-| Enter（リスト選択中） | ファイル再生 / フォルダ移動 / 予約のダブルクリック動作 |
+| PageDown / PageUp | 次/前ページ |
+| Home / End | 先頭/末尾ページ |
+| F5 | フォルダ再読込 |
+| Enter（リスト選択中） | ファイル再生 / フォルダ移動 |
+| Enter（絞込ボックス） | ファイル絞込実行 |
 | ↑ / ↓ | リスト選択移動 |
-| 印字可能文字（リスト選択中） | 検索ボックスにフォーカスを移して入力 |
+| 印字可能文字（リスト選択中） | 絞込ボックスにフォーカスを移して入力 |
 
 ---
 
-## ディレクトリタブ
+## UI 共通
 
-起点フォルダ（`EncodedFolder`）を起点に、フォルダを移動しながら `.ts` / `.m2ts` / `.mp4` ファイルを閲覧・再生する。
-
-### アドレスバー
-
-- **パスボックス**（編集可能）: 現在のフォルダパスを表示。Enter で移動。存在しないパスは拒否して元に戻す
-- **… ボタン**: `OpenFolderDialog` で任意フォルダへ移動。起点外を選択した場合は新しい起点として設定
-
-### ファイル一覧
-
-- カレントディレクトリのサブフォルダ + `.ts`/`.m2ts`/`.mp4` ファイルのみ表示（再帰列挙なし）
-- サブフォルダは `📁 フォルダ名` 形式でリスト上部に名前順表示
-- ファイルは ParsedStartTime 降順（解析できない場合は LastModified 降順）
-- ダブルクリックまたは Enter でサブフォルダに移動 / ファイルを再生
-
-### ファイル選択時の情報表示
-
-MySQL `recordings` テーブルを `file_name`（拡張子なしファイル名）で検索し、一致するエントリがあれば右ペインにタイトル・放送局・日時・ドロップ数・番組情報を表示。一致なしの場合はファイル名から ParsedTitle / ParsedStation / ParsedStartTime を表示。
-
----
-
-## 追っかけ再生（予約ダブルクリック）
-
-1. `recordings` の Title + StartTime が一致する録画ファイルを探して再生
-2. なければ同 Title の最新録画を再生
-3. `IsRecording == true` の場合は `RecordingFolder` を検索し、予約 StartTime ±5分以内に作成された `.ts`/`.m2ts` ファイルを再生（`skipExistCheck: true`）
-
----
-
-## MySQL データベース（録画インデックス）
-
-> **EDCBViewer は MySQL に書き込まない。** `recordings` テーブルへの書き込みは EpgTimerSrv（EDCB）が行う。EDCBViewer は SELECT のみ。
-
-- 接続: `AppSettings.DbConnectionString`（EPG DB と同一の MySQL サーバー・同一接続文字列）
-- 管理クラス: `Services/RecordingIndex.cs`
-- テーブル: `recordings`
-- DbConnectionString 未設定の場合は全 SELECT をスキップ
-
-### recordings テーブルの主なカラム
-
-| カラム | 型 | 内容 |
-|---|---|---|
-| `file_name` | VARCHAR (PRIMARY KEY) | `Path.GetFileNameWithoutExtension(RecFilePath)` |
-| `full_title` | VARCHAR | 録画タイトル（元のまま） |
-| `series_title` | VARCHAR | `ParseTitle()` で抽出したシリーズ名 |
-| `episode_number` | INT NULL | 話数（取得できない場合は NULL） |
-| `start_time` | DATETIME NULL | 録画開始日時 |
-| `start_time_epg` | DATETIME NULL | EPG 上の開始日時 |
-| `duration_second` | BIGINT | 録画秒数 |
-| `service_name` | VARCHAR | 放送局名 |
-| `rec_id` | BIGINT | EDCB の録画 ID |
-| `onid` / `tsid` / `sid` / `event_id` | BIGINT | EPG 識別子 |
-| `program_info` | TEXT | 番組情報テキスト |
-| `comment` / `err_info` | VARCHAR | コメント・エラー情報 |
-| `drops` / `scrambles` | BIGINT | ドロップ・スクランブル数 |
-| `rec_status` / `protect_flag` | BIGINT | 録画状態・保護フラグ |
-| `original_file_path` | VARCHAR | フルパス |
-| `saved_at` | DATETIME | インデックス登録日時 |
-
-### 主なメソッド（SELECT のみ）
-
-- `LoadAll()`: 全件を `List<RecFileInfo>` として返す（START TIME DESC）
-- `Find(fileName)`: `file_name` で検索して `RecordingIndexEntry?` を返す
-- `FindPathByRecId(recId)`: `rec_id` から `original_file_path` を返す
-- `ParseTitle(title)`: タイトルからシリーズ名と話数を抽出（`#N`・`＃N`・`第N話`・`第N回`・`（N）`・`(N)`・末尾スペース+数字に対応）
-
-> `AddOrUpdate()` メソッドはコード上に残存しているが呼び出し元なし。削除予定。
+- 全ウィンドウのタイトルバーは `DwmSetWindowAttribute(DWMWA_USE_IMMERSIVE_DARK_MODE)` でダークモード描画（`DarkTitleBar.Apply`）
+- 水平ホイール（WM_MOUSEHWHEEL、MX Master のサムホイール等）対応（`HorizontalWheel.Attach`）。
+  WPF は水平ホイール未対応のため WndProc フックで変換する
+  - メインウィンドウ: マウスカーソル直下の横スクロール可能な ScrollViewer をスクロール
+  - 番組表: 常にメイングリッドをスクロール（ヘッダー・詳細ペイン上でも効く）
 
 ---
 
@@ -266,14 +244,26 @@ MySQL `recordings` テーブルを `file_name`（拡張子なしファイル名�
 > **EDCBViewer は events テーブルに書き込まない。** 書き込みは EpgTimerSrv が行う。
 
 - クラス: `Services/EpgDbReader.cs`
-- 接続文字列: `AppSettings.DbConnectionString`（録画インデックス DB と共用）
-- DbConnectionString 未設定（`IsConfigured == false`）の場合は null を返す
+- 接続文字列: `AppSettings.DbConnectionString`
+- DbConnectionString 未設定（`IsConfigured == false`）の場合は null / 空リストを返す
 
-### GetEventInfoText
+### メソッド
 
-`(onid, tsid, sid, event_id)` で `events` テーブルを検索し `short_text + "\n" + ext_text` を返す。両方空なら null。
+| メソッド | 用途 |
+|---|---|
+| `GetEventInfoText(onid, tsid, sid, eventId)` | PK で events を検索し short_text + ext_text を返す |
+| `GetEventInfoByStationAndTime(station, startTime, preferTitle)` | 放送局名 + 開始時刻 ±2分で検索し (event_name, 説明文) を返す。preferTitle とのトリグラム照合で誤マッチを除外 |
+| `GetGuideEvents(rangeStart, rangeEnd)` | 番組表用。時間範囲の全TVサービスのイベント（ジャンル付き、本文なし）を表示順で返す |
+| `GetMatchingEventKeys(terms)` | 絞込検索用。全語（AND）が番組名・説明文のいずれかに LIKE 一致するイベントの (service_name, start_time) を返す |
+| `SearchEvents(keyword, limit=200)` | 全文検索。REGEXP フレーズ → AND LIKE フォールバック（現在 UI 未使用） |
+| `HasCommonTrigram(a, b)` | internal。3文字部分列の共通有無（テストから参照） |
 
-> `SyncCacheToDbAsync()` メソッドはコード上に残存しているが呼び出し元なし。削除予定。
+### DB ビュー
+
+| ビュー | 定義 |
+|---|---|
+| `program_guide` | `SELECT e.*, s.service_name, s.network_name, s.remote_control_key FROM events e JOIN services s USING (onid, tsid, sid)` |
+| `upcoming` | `SELECT * FROM program_guide WHERE start_time > NOW()` |
 
 ### 書き込み側（EpgTimerSrv）
 
@@ -282,13 +272,14 @@ EpgTimerSrv（C++）が EPG ロード完了後に MySQL へ書き出す。
 
 ---
 
-## 他プロジェクトとの連携
+## テスト（Tests/）
 
-### EpgTimerSrv（C++）
-- **予約一覧**: EMWUI HTTP API（`/api/EnumReserveInfo`）経由
-- **録画一覧**: MySQL `recordings` テーブルから直接取得（EMWUI 不使用）
-- **EPG DB**: EpgTimerSrv が書き出す MySQL `events` テーブルを参照
+デグレ防止用の xUnit テスト。`dotnet test Tests\EDCBViewer.Tests.csproj -c Release` で実行。
 
-### EDCBEpgImporter（C#）
-- `C:\work\CC\EDCBEpgImporter`
-- `*_epg.dat` を読んで同スキーマの DB に書き出すスタンドアロンツール
+| テストファイル | 対象 |
+|---|---|
+| MediaFileTests.cs | ファイル名パース（通常 / 継続 `-(N)` / 不一致 / フォルダ表示名 / 日時テキスト） |
+| EpgTrigramTests.cs | `HasCommonTrigram` の基本動作と DB 破損シナリオの再現 |
+
+テストプロジェクトは `InternalsVisibleTo("EDCBViewer.Tests")` で internal メンバーを参照する。
+本体 csproj は `<Compile Remove="Tests\**" />` で Tests 配下を除外している。

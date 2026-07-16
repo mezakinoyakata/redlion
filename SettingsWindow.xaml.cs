@@ -1,15 +1,17 @@
+using System.Collections.ObjectModel;
 using System.Windows;
-using Microsoft.Win32;
 
 namespace EDCBViewer;
 
 public partial class SettingsWindow : Window
 {
     public AppSettings Settings { get; private set; }
+    private readonly ObservableCollection<string> _folderItems;
 
     public SettingsWindow(AppSettings current)
     {
         InitializeComponent();
+        DarkTitleBar.Apply(this);
         Settings = new AppSettings
         {
             MaxRecItems        = current.MaxRecItems,
@@ -17,10 +19,11 @@ public partial class SettingsWindow : Window
             EncodedFolder      = current.EncodedFolder,
             DbConnectionString = current.DbConnectionString,
         };
+        _folderItems = new ObservableCollection<string>(current.EncodedFolders);
         MaxRecItemsBox.Text        = Settings.MaxRecItems.ToString();
         PlayerPathBox.Text         = Settings.PlayerPath;
-        EncodedFolderBox.Text      = Settings.EncodedFolder;
         DbConnectionStringBox.Text = Settings.DbConnectionString;
+        FolderListBox.ItemsSource  = _folderItems;
     }
 
     private void Save_Click(object sender, RoutedEventArgs e)
@@ -28,8 +31,8 @@ public partial class SettingsWindow : Window
         if (int.TryParse(MaxRecItemsBox.Text.Trim(), out var n) && n > 0)
             Settings.MaxRecItems = n;
         Settings.PlayerPath         = PlayerPathBox.Text.Trim();
-        Settings.EncodedFolder      = EncodedFolderBox.Text.Trim();
         Settings.DbConnectionString = DbConnectionStringBox.Text.Trim();
+        Settings.EncodedFolders     = _folderItems.ToList();
         DialogResult = true;
         Close();
     }
@@ -42,7 +45,7 @@ public partial class SettingsWindow : Window
 
     private void Browse_Click(object sender, RoutedEventArgs e)
     {
-        var dlg = new OpenFileDialog
+        var dlg = new Microsoft.Win32.OpenFileDialog
         {
             Title = "プレイヤーを選択",
             Filter = "実行ファイル (*.exe)|*.exe|すべてのファイル (*.*)|*.*",
@@ -52,14 +55,22 @@ public partial class SettingsWindow : Window
             PlayerPathBox.Text = dlg.FileName;
     }
 
-    private void BrowseFolder_Click(object sender, RoutedEventArgs e)
+    private void AddFolder_Click(object sender, RoutedEventArgs e)
     {
         var dlg = new Microsoft.Win32.OpenFolderDialog
         {
-            Title = "フォルダを選択",
-            InitialDirectory = EncodedFolderBox.Text,
+            Title = "フォルダを追加",
+            InitialDirectory = _folderItems.LastOrDefault() ?? "",
         };
-        if (dlg.ShowDialog() == true)
-            EncodedFolderBox.Text = dlg.FolderName;
+        if (dlg.ShowDialog() != true) return;
+        var path = dlg.FolderName.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        if (!_folderItems.Contains(path, StringComparer.OrdinalIgnoreCase))
+            _folderItems.Add(path);
+    }
+
+    private void RemoveFolder_Click(object sender, RoutedEventArgs e)
+    {
+        if (FolderListBox.SelectedItem is string path)
+            _folderItems.Remove(path);
     }
 }

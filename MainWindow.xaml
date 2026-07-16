@@ -92,6 +92,7 @@
                 <MenuItem Header="パス設定..." Click="Settings_Click" Foreground="#FF1E1E1E"/>
             </MenuItem>
             <MenuItem x:Name="RefreshMenuItem" Header="更新 (F5)" Click="Refresh_Click" Foreground="#FFE0E0E0"/>
+            <MenuItem Header="番組表" Click="EpgGuide_Click" Foreground="#FFE0E0E0"/>
         </Menu>
 
         <!-- ステータスバー -->
@@ -119,7 +120,7 @@
                 </Grid.RowDefinitions>
 
                 <!-- アドレスバー -->
-                <Border Grid.Row="0" Background="#FF1A1A1A"
+                <Border x:Name="DirAddressBar" Grid.Row="0" Background="#FF1A1A1A"
                         BorderBrush="#FF444444" BorderThickness="0,0,0,1"
                         Padding="6,4">
                     <DockPanel>

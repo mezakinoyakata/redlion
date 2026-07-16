@@ -1,0 +1,140 @@
+<Window x:Class="EDCBViewer.EpgGuideWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="番組表" Height="850" Width="1500" MinHeight="500" MinWidth="900"
+        Background="#FF1E1E1E">
+    <Window.Resources>
+        <Style TargetType="Button">
+            <Setter Property="Background" Value="#FF3C3C3C"/>
+            <Setter Property="Foreground" Value="#FFE0E0E0"/>
+            <Setter Property="BorderBrush" Value="#FF555555"/>
+            <Setter Property="Padding" Value="10,4"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Style.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Background" Value="#FF4A4A4A"/>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+        <Style TargetType="TextBlock" x:Key="InfoLabel">
+            <Setter Property="Foreground" Value="#FF888888"/>
+            <Setter Property="FontSize" Value="11"/>
+            <Setter Property="Margin" Value="0,6,0,2"/>
+        </Style>
+        <Style x:Key="SelectableValue" TargetType="TextBox">
+            <Setter Property="IsReadOnly"       Value="True"/>
+            <Setter Property="Background"       Value="Transparent"/>
+            <Setter Property="BorderThickness"  Value="0"/>
+            <Setter Property="Foreground"       Value="#FFE0E0E0"/>
+            <Setter Property="FontSize"         Value="13"/>
+            <Setter Property="TextWrapping"     Value="Wrap"/>
+            <Setter Property="Padding"          Value="0"/>
+            <Setter Property="Margin"           Value="0"/>
+            <Setter Property="SelectionBrush"   Value="#FF0078D4"/>
+            <Setter Property="CaretBrush"       Value="Transparent"/>
+            <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+            <Setter Property="Cursor"           Value="IBeam"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="TextBox">
+                        <ScrollViewer x:Name="PART_ContentHost" Focusable="False"
+                                      HorizontalScrollBarVisibility="Hidden"
+                                      VerticalScrollBarVisibility="Hidden"
+                                      Padding="0" Margin="0"/>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
+
+    <DockPanel>
+        <!-- ツールバー -->
+        <Border DockPanel.Dock="Top" Background="#FF2D2D2D"
+                BorderBrush="#FF444444" BorderThickness="0,0,0,1" Padding="8,5">
+            <DockPanel>
+                <Button DockPanel.Dock="Left" Content="◀ 前日" Click="PrevDay_Click" Margin="0,0,4,0"/>
+                <Button DockPanel.Dock="Left" Content="今日" Click="Today_Click" Margin="0,0,4,0"/>
+                <Button DockPanel.Dock="Left" Content="翌日 ▶" Click="NextDay_Click" Margin="0,0,12,0"/>
+                <DatePicker x:Name="DateBox" DockPanel.Dock="Left" Width="130"
+                            SelectedDateChanged="DateBox_SelectedDateChanged"
+                            Background="#FF3C3C3C" Foreground="#FF1E1E1E"/>
+                <TextBlock x:Name="StatusText" DockPanel.Dock="Right"
+                           Foreground="#FF888888" FontSize="12"
+                           VerticalAlignment="Center" Margin="12,0,0,0"/>
+                <TextBlock x:Name="DateLabel" Foreground="White" FontSize="15"
+                           FontWeight="SemiBold" VerticalAlignment="Center"
+                           Margin="16,0,0,0"/>
+            </DockPanel>
+        </Border>
+
+        <Grid>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" MinWidth="500"/>
+                <ColumnDefinition Width="5"/>
+                <ColumnDefinition Width="320" MinWidth="220"/>
+            </Grid.ColumnDefinitions>
+
+            <!-- 番組表グリッド -->
+            <Grid Grid.Column="0">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="30"/>
+                    <RowDefinition Height="*"/>
+                </Grid.RowDefinitions>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="44"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+
+                <!-- 左上コーナー -->
+                <Border Grid.Row="0" Grid.Column="0" Background="#FF2D2D2D"
+                        BorderBrush="#FF444444" BorderThickness="0,0,1,1"/>
+
+                <!-- サービス名ヘッダー（横同期スクロール） -->
+                <ScrollViewer x:Name="HeaderScroll" Grid.Row="0" Grid.Column="1"
+                              HorizontalScrollBarVisibility="Hidden"
+                              VerticalScrollBarVisibility="Disabled">
+                    <StackPanel x:Name="HeaderPanel" Orientation="Horizontal"/>
+                </ScrollViewer>
+
+                <!-- 時刻軸（縦同期スクロール） -->
+                <ScrollViewer x:Name="TimeScroll" Grid.Row="1" Grid.Column="0"
+                              HorizontalScrollBarVisibility="Disabled"
+                              VerticalScrollBarVisibility="Hidden">
+                    <Canvas x:Name="TimeCanvas" Width="44"/>
+                </ScrollViewer>
+
+                <!-- メイン番組グリッド -->
+                <ScrollViewer x:Name="MainScroll" Grid.Row="1" Grid.Column="1"
+                              HorizontalScrollBarVisibility="Auto"
+                              VerticalScrollBarVisibility="Auto"
+                              ScrollChanged="MainScroll_ScrollChanged">
+                    <Canvas x:Name="GuideCanvas" Background="#FF252525"/>
+                </ScrollViewer>
+            </Grid>
+
+            <GridSplitter Grid.Column="1" Width="5" HorizontalAlignment="Stretch"
+                          Background="#FF444444"/>
+
+            <!-- 番組詳細パネル -->
+            <ScrollViewer Grid.Column="2" Background="#FF252525"
+                          VerticalScrollBarVisibility="Auto">
+                <StackPanel Margin="12">
+                    <TextBox x:Name="DetailTitle" Style="{StaticResource SelectableValue}"
+                             Foreground="White" FontSize="15" FontWeight="SemiBold"
+                             Margin="0,0,0,8"/>
+
+                    <TextBlock Style="{StaticResource InfoLabel}" Text="放送局"/>
+                    <TextBox x:Name="DetailService" Style="{StaticResource SelectableValue}"/>
+
+                    <TextBlock Style="{StaticResource InfoLabel}" Text="放送日時"/>
+                    <TextBox x:Name="DetailTime" Style="{StaticResource SelectableValue}"/>
+
+                    <TextBlock x:Name="DetailInfoLabel" Style="{StaticResource InfoLabel}"
+                               Text="番組情報" Visibility="Collapsed"/>
+                    <TextBox x:Name="DetailInfo" Style="{StaticResource SelectableValue}"
+                             FontSize="12" Visibility="Collapsed"/>
+                </StackPanel>
+            </ScrollViewer>
+        </Grid>
+    </DockPanel>
+</Window>

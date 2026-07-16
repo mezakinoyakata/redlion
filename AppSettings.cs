@@ -4,9 +4,6 @@ namespace EDCBViewer;
 
 public class AppSettings
 {
-    /// <summary>EMWUI の URL。例: http://5600x:5510</summary>
-    public string EmwuiBaseUrl { get; set; } = "";
-
     /// <summary>録画済み一覧の取得件数上限（新しい順に N 件）。</summary>
     public int MaxRecItems { get; set; } = 500;
 
@@ -16,55 +13,17 @@ public class AppSettings
     public string PlayerPath { get; set; } = @"C:\ap\MPC-BE.1.8.1.x64\mpc-be64.exe";
     public int RefreshIntervalSeconds { get; set; } = 60;
 
-    /// <summary>エンコード済みフォルダのパス（ディレクトリタブで .mp4 を一覧表示）。</summary>
+    /// <summary>エンコード済みフォルダのパス（旧設定、EncodedFolders への移行用）。</summary>
     public string EncodedFolder { get; set; } = "";
+
+    /// <summary>起点フォルダのリスト（ディレクトリタブでルートとして表示）。</summary>
+    public List<string> EncodedFolders { get; set; } = new();
 
     /// <summary>EDCBのEPGデータフォルダ（*_epg.dat が置かれている場所）。</summary>
     public string EpgDataFolder { get; set; } = "";
 
     /// <summary>MySQL 接続文字列（例: Server=5600x;Database=edcbviewer;Uid=edcb;Pwd=pass）</summary>
     public string DbConnectionString { get; set; } = "";
-
-    // API が返すファイルパスはサーバー側のローカルパス (例: D:\PT2\foo.ts)
-    // EmwuiBaseUrl のホスト名を使って UNC パスに変換する:
-    //   "D:\PT2\foo.ts" + host "5600x" → "\\5600x\d\PT2\foo.ts"
-    public string ToUncPath(string localPath)
-    {
-        if (string.IsNullOrEmpty(localPath))
-            return localPath;
-
-        // すでに UNC パスならそのまま返す
-        if (localPath.StartsWith(@"\\"))
-            return localPath;
-
-        // ドライブレター形式 (X:\...) を UNC に変換
-        if (localPath.Length >= 3 && localPath[1] == ':' && localPath[2] == '\\')
-        {
-            var server = UncServer;
-            if (!string.IsNullOrEmpty(server))
-            {
-                var drive = char.ToLower(localPath[0]);
-                var rest = localPath[3..]; // ドライブレターと "\" を除いた残り
-                return $@"\\{server}\{drive}\{rest}";
-            }
-        }
-
-        return localPath;
-    }
-
-    // EmwuiBaseUrl からホスト名を抽出 ("http://5600x:5510" → "5600x")
-    private string UncServer
-    {
-        get
-        {
-            if (!string.IsNullOrWhiteSpace(EmwuiBaseUrl))
-            {
-                try { return new Uri(EmwuiBaseUrl).Host; }
-                catch { }
-            }
-            return "";
-        }
-    }
 
     private static readonly string SettingsPath =
         Path.Combine(
@@ -85,7 +44,11 @@ public class AppSettings
             if (File.Exists(SettingsPath))
             {
                 var json = File.ReadAllText(SettingsPath);
-                return JsonSerializer.Deserialize<AppSettings>(json) ?? new AppSettings();
+                var result = JsonSerializer.Deserialize<AppSettings>(json) ?? new AppSettings();
+                // EncodedFolder → EncodedFolders への移行
+                if (result.EncodedFolders.Count == 0 && !string.IsNullOrEmpty(result.EncodedFolder))
+                    result.EncodedFolders.Add(result.EncodedFolder);
+                return result;
             }
         }
         catch { }
