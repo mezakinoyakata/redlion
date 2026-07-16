@@ -115,6 +115,32 @@ public class MediaFileTests
         Assert.Contains("某フォルダ", f.DisplayName);
     }
 
+    // ─── 検索用正規化（全角半角無視） ────────────────────────────────────────
+
+    [Fact]
+    public void NormalizeForSearch_FoldsFullWidthAlphanumerics()
+    {
+        Assert.Equal("4K", MediaFile.NormalizeForSearch("４Ｋ"));
+        Assert.Equal("HDR", MediaFile.NormalizeForSearch("ＨＤＲ"));
+    }
+
+    [Fact]
+    public void SearchText_MatchesHalfWidthTermAgainstFullWidthFilename()
+    {
+        // 「4K」（半角）で「ＮＨＫ　ＢＳＰ４Ｋ」（全角）の局名がヒットする
+        var f = Make("【大河ドラマアンコール】太平記（１２）「笠置落城」 (ＮＨＫ　ＢＳＰ４Ｋ 2026-07-05-1130-日)");
+        var term = MediaFile.NormalizeForSearch("4K");
+        Assert.Contains(term, f.SearchText, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void SearchText_MatchesCaseInsensitively()
+    {
+        var f = Make("鋼の錬金術師 4K Ultra HD 特別放送 (ＢＳ１１イレブン 2025-12-27-2330-土)");
+        var term = MediaFile.NormalizeForSearch("ultra hd");
+        Assert.Contains(term, f.SearchText, StringComparison.OrdinalIgnoreCase);
+    }
+
     // ─── タイムスタンプ ────────────────────────────────────────────────────
 
     [Fact]

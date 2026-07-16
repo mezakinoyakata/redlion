@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.RegularExpressions;
 
 namespace EDCBViewer.Models;
@@ -29,6 +30,14 @@ public class MediaFile
 
     public string ParsedTitle    => Parsed.title;
     public string ParsedStation  => Parsed.station;
+
+    // 絞込検索用: NFKC 正規化で全角英数・記号を半角に畳む
+    // （「4K」で「４Ｋ」、「HDR」で「ＨＤＲ」がヒットするように）
+    internal static string NormalizeForSearch(string s) => s.Normalize(NormalizationForm.FormKC);
+
+    private string? _searchText;
+    internal string SearchText => _searchText ??= NormalizeForSearch(ParsedTitle + "\n" + ParsedStation);
+
     public DateTime? ParsedStartTime => Parsed.startTime;
     public string ParsedStartTimeText => ParsedStartTime.HasValue
         ? $"{ParsedStartTime.Value:yyyy/MM/dd HH:mm}"

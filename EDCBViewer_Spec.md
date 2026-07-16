@@ -116,13 +116,17 @@ EDCB RecName_Macro.DLL フォーマット
 ```
 ① ファイル名パース結果（ParsedTitle / ParsedStation / ParsedStartTime）を右ペインに即表示
 ② ParsedStation と ParsedStartTime が取得できた場合:
-     EpgDbReader.GetEventInfoTextByStationAndTime(station, startTime, preferTitle: ParsedTitle)
+     EpgDbReader.GetEventInfoByStationAndTime(station, startTime, preferTitle: ParsedTitle)
        → events JOIN services WHERE service_name=@svc AND start_time BETWEEN ±2分（最大10件）
        → 複数ヒット時は event_name と preferTitle の双方向包含でベスト候補を選択
        → preferTitle と event_name にトリグラム（3文字部分列）の共通がなければ
           別番組とみなして非表示（同局名マルチサービスの誤マッチ対策）
-       → short_text + ext_text を番組情報として表示
-③ ②がヒットしない、または ParsedStation/ParsedStartTime 未取得 → 番組情報欄は非表示
+       → タイトル表示を EPG 側の正式タイトル（event_name）に差し替える。
+          ファイル名では Title2 マクロで除去されている [4K][HDR][字] 等のタグが見える
+          （2026-07-16 導入。一覧のファイル名列はファイル名のまま）
+       → short_text + ext_text を番組情報として表示（両方空なら番組情報欄のみ非表示）
+③ ②がヒットしない、または ParsedStation/ParsedStartTime 未取得
+   → タイトルはファイル名パース結果のまま、番組情報欄は非表示
 ```
 
 > イベント名と説明文の照合は行わない。説明文がタイトル文字列を含まない番組が
@@ -160,16 +164,37 @@ EDCB RecName_Macro.DLL フォーマット
 
 ## ファイル検索（絞込）
 
-**検索対象はファイルのみ**（EPG は検索しない）。
+**検索結果に表示するのはファイルのみ**（EPG イベントは表示しない）。
 
-絞込ボックスにキーワードを入力して **Enter** を押すと、ファイル名（ParsedTitle・ParsedStation）を部分一致フィルタする。
-スペース区切りは AND 条件（全語一致）。フォルダは常時表示（フィルタ対象外）。
+絞込ボックスにキーワードを入力して **Enter** を押すと、**現在のスコープ以下を再帰的に**検索する。
 
-- 一致ゼロの場合は「一致するファイルがありません」を表示（EPG へのフォールバックはしない。
-  以前は 0 件時に EPG 全文検索へ自動フォールバックしていたが、2026-07-11 に撤去）
+- スコープ: ルート表示中なら全起点フォルダ以下、フォルダ内ならそのフォルダ以下（サブフォルダ含む）
+- スペース区切りは AND 条件（全語一致）
+- マッチ判定は次の **2 系統の OR**（2026-07-16 導入）:
+  1. **ファイル名一致**: ParsedTitle・ParsedStation の部分一致（パース不能なファイル名は
+     全体が ParsedTitle になる）。両辺を NFKC 正規化するため全角半角・大文字小文字は無視
+     （「4K」で「４Ｋ」がヒット）
+  2. **EPG 照合**: EPG DB の番組名＋説明文（event_name / short_text / ext_text）に全語一致した
+     イベントの (service_name, start_time) と、ファイルの (ParsedStation, ParsedStartTime) が
+     分精度で一致すれば結果に含める（`EpgDbReader.GetMatchingEventKeys`）。
+     **EDCB の Title2 マクロは `[4K]` `[HDR]` `[字]` 等のタグをファイル名から除去するため、
+     これらのタグはファイル名検索では原理的にヒットしない**（「HDR」0 件バグの原因）。
+     DB 照合順序 utf8mb4_0900_ai_ci により DB 側も全角半角・大文字小文字を無視する。
+     DbConnectionString 未設定・DB 接続不可の場合はファイル名一致のみで動作
+- 検索結果は**ファイルのみ表示**（フォルダは表示しない）。ソート・ページング有効
+- 一致ゼロの場合は「一致するファイルがありません」を表示（EPG イベントへのフォールバック表示はしない。
+  以前は 0 件時に EPG 全文検索の**イベント**を表示していたが、2026-07-11 に撤去。
+  同日、検索対象を「表示中フォルダ直下のみ」から「スコープ以下の再帰」に変更）
 - 絞込ボックスをクリアするとファイルブラウズモードに戻る
 
 ※ `EpgDbReader.SearchEvents`（REGEXP フレーズ検索 → AND LIKE フォールバック）は実装として残っているが、UI からは呼ばれていない。
+
+### 起点フォルダの自動再読込
+
+起動直後にネットワーク未接続などで読み込めなかった起点フォルダがある場合、5 秒後に自動再読込する。
+**リトライは最大 3 回**（空フォルダと未接続を区別できないため、無制限だと空の起点フォルダ 1 つで
+5 秒ごとの再読込が永久に続く）。手動リフレッシュ（F5・更新ボタン・設定変更・ナビゲート）で回数はリセット。
+検索モード中（絞込適用中）は自動再読込しない。
 
 ---
 
@@ -227,8 +252,9 @@ EDCB RecName_Macro.DLL フォーマット
 | メソッド | 用途 |
 |---|---|
 | `GetEventInfoText(onid, tsid, sid, eventId)` | PK で events を検索し short_text + ext_text を返す |
-| `GetEventInfoTextByStationAndTime(station, startTime, preferTitle)` | 放送局名 + 開始時刻 ±2分で検索。preferTitle とのトリグラム照合で誤マッチを除外 |
+| `GetEventInfoByStationAndTime(station, startTime, preferTitle)` | 放送局名 + 開始時刻 ±2分で検索し (event_name, 説明文) を返す。preferTitle とのトリグラム照合で誤マッチを除外 |
 | `GetGuideEvents(rangeStart, rangeEnd)` | 番組表用。時間範囲の全TVサービスのイベント（ジャンル付き、本文なし）を表示順で返す |
+| `GetMatchingEventKeys(terms)` | 絞込検索用。全語（AND）が番組名・説明文のいずれかに LIKE 一致するイベントの (service_name, start_time) を返す |
 | `SearchEvents(keyword, limit=200)` | 全文検索。REGEXP フレーズ → AND LIKE フォールバック（現在 UI 未使用） |
 | `HasCommonTrigram(a, b)` | internal。3文字部分列の共通有無（テストから参照） |
 

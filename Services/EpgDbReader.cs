@@ -11,7 +11,12 @@ public sealed class EpgDbReader
 
     public bool IsConfigured => !string.IsNullOrWhiteSpace(_connStr);
 
-    public string? GetEventInfoTextByStationAndTime(
+    /// <summary>放送局名＋開始時刻で特定したイベントの正式タイトルと説明文。</summary>
+    /// <remarks>EventName はファイル名では Title2 マクロで除去される [4K][HDR][字] 等の
+    /// タグを含む EPG 側の正式タイトル。InfoText は説明文が無いイベントでは null。</remarks>
+    public sealed record EventDisplayInfo(string EventName, string? InfoText);
+
+    public EventDisplayInfo? GetEventInfoByStationAndTime(
         string stationName, DateTime startTime, string? preferTitle = null)
     {
         if (!IsConfigured || string.IsNullOrEmpty(stationName)) return null;
@@ -61,15 +66,16 @@ public sealed class EpgDbReader
                     return null;
             }
 
-            if (string.IsNullOrEmpty(best.Short) && string.IsNullOrEmpty(best.Ext)) return null;
-
             // 説明文はタイトル文字列を含まないことが普通にある（あかね噺の説明に
             // 「あかね噺」が出てこない等）ため、event_name と説明文の照合はしない。
             // 2026-06 の SyncCacheToDbAsync 汚染データは DB 側でクリア済み。
 
-            return string.IsNullOrEmpty(best.Ext)   ? best.Short
-                 : string.IsNullOrEmpty(best.Short) ? best.Ext
-                 : best.Short + "\n" + best.Ext;
+            var infoText =
+                  string.IsNullOrEmpty(best.Short) && string.IsNullOrEmpty(best.Ext) ? null
+                : string.IsNullOrEmpty(best.Ext)   ? best.Short
+                : string.IsNullOrEmpty(best.Short) ? best.Ext
+                : best.Short + "\n" + best.Ext;
+            return new EventDisplayInfo(best.Name, infoText);
         }
         catch { return null; }
     }
@@ -144,6 +150,40 @@ public sealed class EpgDbReader
             return ReadEvents(r2);
         }
         catch (Exception ex) { LastSearchError = ex.Message; return []; }
+    }
+
+    /// <summary>
+    /// 絞込検索用: 全語（AND）が番組名・説明文のいずれかのフィールドに LIKE 一致する
+    /// イベントの (サービス名, 開始時刻) を返す。
+    /// ファイル名には EDCB の Title2 マクロで [4K][HDR][字] 等のタグが除去されているため、
+    /// EPG 側の情報でファイルを対応付けるために使う（対応付けは呼び出し側で行う）。
+    /// DB照合順序は utf8mb4_0900_ai_ci なので全角半角・大文字小文字は無視される。
+    /// </summary>
+    public List<(string ServiceName, DateTime StartTime)> GetMatchingEventKeys(string[] terms)
+    {
+        if (!IsConfigured || terms.Length == 0) return [];
+        try
+        {
+            using var conn = new MySqlConnection(_connStr);
+            conn.Open();
+            var cols = new[] { "e.event_name", "e.short_text", "e.ext_text" };
+            var fieldAnd = cols.Select(c =>
+                "(" + string.Join(" AND ", terms.Select((_, i) => $"{c} LIKE @t{i}")) + ")");
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText =
+                "SELECT s.service_name, e.start_time " +
+                "FROM events e JOIN services s ON e.onid=s.onid AND e.tsid=s.tsid AND e.sid=s.sid " +
+                "WHERE (" + string.Join(" OR ", fieldAnd) + ")";
+            for (int i = 0; i < terms.Length; i++)
+                cmd.Parameters.AddWithValue($"@t{i}", $"%{terms[i]}%");
+            using var r = cmd.ExecuteReader();
+            var list = new List<(string, DateTime)>();
+            while (r.Read())
+                if (!r.IsDBNull(0) && !r.IsDBNull(1))
+                    list.Add((r.GetString(0), r.GetDateTime(1)));
+            return list;
+        }
+        catch { return []; }
     }
 
     /// <summary>

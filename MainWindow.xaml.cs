@@ -19,6 +19,9 @@ public partial class MainWindow : Window
     private bool _fileFilterActive = false;  // Enter押下時のみtrue、ナビゲート時にリセット
 
     private List<MediaFile> _mediaFiles = [];
+    private List<MediaFile>? _searchFiles;  // Enter検索の再帰列挙結果（null=通常ブラウズ）
+    private HashSet<(string Station, DateTime Start)>? _searchEpgKeys;  // EPG照合ヒットの (放送局, 開始時刻[分精度])
+    private int _rootRetryCount = 3;        // 未接続フォルダの自動再読込の残り回数（無限ループ防止）
     private MediaFile? _selectedMediaFile;
     private int _dirCurrentPage = 0;
     private int DirPageSize => _settings.MaxRecItems;
@@ -76,7 +79,10 @@ public partial class MainWindow : Window
         _currentDirPath  = path;
         _inEpgSearch     = false;
         _fileFilterActive = false;
+        _searchFiles     = null;
+        _searchEpgKeys   = null;
         _dirCurrentPage  = 0;
+        _rootRetryCount  = 3;
         LoadMediaFiles();
     }
 
@@ -151,18 +157,21 @@ public partial class MainWindow : Window
             ShowDirPage();
             DirList.Focus();
 
-            // 起動直後にネットワーク未接続だったフォルダがあれば 5 秒後に再読込
+            // 起動直後にネットワーク未接続だったフォルダがあれば 5 秒後に再読込。
+            // 空フォルダも「未接続」と区別できないため、リトライは回数制限付き
+            // （無制限だと空の起点フォルダ1つで5秒ごとの再読込が永久に続く）
             var failedRoots = roots.Where(r =>
                 !merged.Any(f => f.FilePath.StartsWith(
                     r.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
                     + Path.DirectorySeparatorChar,
                     StringComparison.OrdinalIgnoreCase))).ToList();
-            if (failedRoots.Count > 0)
+            if (failedRoots.Count > 0 && _rootRetryCount > 0)
             {
+                _rootRetryCount--;
                 _ = Task.Delay(5000).ContinueWith(_ =>
                     Dispatcher.InvokeAsync(() =>
                     {
-                        if (!_dirLoading && string.IsNullOrEmpty(_currentDirPath))
+                        if (!_dirLoading && string.IsNullOrEmpty(_currentDirPath) && !_fileFilterActive)
                             LoadMediaFiles();
                     }));
             }
@@ -250,17 +259,28 @@ public partial class MainWindow : Window
 
     private List<MediaFile> GetFilteredFiles()
     {
-        var dirs = _mediaFiles.Where(f => f.IsDirectory).OrderBy(d => d.DisplayName);
-        IEnumerable<MediaFile> files = _mediaFiles.Where(f => !f.IsDirectory);
+        // 検索モード中は再帰列挙結果（ファイルのみ）を対象にし、フォルダは表示しない
+        IEnumerable<MediaFile> dirs = _fileFilterActive && _searchFiles != null
+            ? []
+            : _mediaFiles.Where(f => f.IsDirectory).OrderBy(d => d.DisplayName);
+        IEnumerable<MediaFile> files = _fileFilterActive && _searchFiles != null
+            ? _searchFiles
+            : _mediaFiles.Where(f => !f.IsDirectory);
 
         if (_fileFilterActive)
         {
+            // ファイル名側は NFKC 正規化して全角半角を無視。
+            // EDCB の Title2 マクロは [4K][HDR][字] 等のタグをファイル名から除去するため、
+            // ファイル名不一致でも EPG 照合（放送局+開始時刻）でヒットすれば結果に含める
             var terms = DirSearchBox.Text.Trim()
-                .Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                .Split(' ', StringSplitOptions.RemoveEmptyEntries)
+                .Select(MediaFile.NormalizeForSearch)
+                .ToArray();
             if (terms.Length > 0)
-                files = files.Where(f => terms.All(t =>
-                    f.ParsedTitle.Contains(t, StringComparison.OrdinalIgnoreCase) ||
-                    f.ParsedStation.Contains(t, StringComparison.OrdinalIgnoreCase)));
+                files = files.Where(f =>
+                    terms.All(t => f.SearchText.Contains(t, StringComparison.OrdinalIgnoreCase)) ||
+                    (_searchEpgKeys != null && f.ParsedStartTime.HasValue &&
+                     _searchEpgKeys.Contains((f.ParsedStation, f.ParsedStartTime.Value))));
         }
 
         if (_dirSortProp != null)
@@ -354,11 +374,13 @@ public partial class MainWindow : Window
         if (!string.IsNullOrEmpty(DirSearchBox.Text)) return;
         _inEpgSearch      = false;
         _fileFilterActive = false;
+        _searchFiles      = null;
+        _searchEpgKeys    = null;
         _dirCurrentPage   = 0;
         ShowDirPage();
     }
 
-    private void DirSearchBox_KeyDown(object sender, KeyEventArgs e)
+    private async void DirSearchBox_KeyDown(object sender, KeyEventArgs e)
     {
         if (e.Key != Key.Enter) return;
         e.Handled = true;
@@ -368,13 +390,35 @@ public partial class MainWindow : Window
         {
             _inEpgSearch      = false;
             _fileFilterActive = false;
+            _searchFiles      = null;
+            _searchEpgKeys    = null;
             _dirCurrentPage   = 0;
             ShowDirPage();
             DirList.Focus();
             return;
         }
 
-        // ファイルフィルタを適用（スペース区切り AND）。検索対象はファイルのみ（EPG には飛ばない）
+        // 検索結果に表示するのはファイルのみ（EPG イベントは表示しない）。
+        // 現在のスコープ（ルート表示なら全起点フォルダ、フォルダ内ならそのフォルダ）
+        // 以下を再帰列挙し、スペース区切り AND でフィルタする。
+        // 加えて EPG DB の番組名・説明文にもキーワードを照合し、ヒットした番組の
+        // (放送局, 開始時刻) に対応するファイルも結果に含める
+        // （[HDR] 等のタグはファイル名から除去されており EPG にしか存在しないため）
+        StatusText.Text = "検索中...";
+        List<string> scopes = string.IsNullOrEmpty(_currentDirPath)
+            ? _settings.EncodedFolders.Where(f => !string.IsNullOrEmpty(f)).ToList()
+            : [_currentDirPath];
+        var terms  = q.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        var reader = _epgReader;
+        (_searchFiles, _searchEpgKeys) = await Task.Run(() =>
+        {
+            var files = EnumerateFilesRecursive(scopes);
+            var keys  = reader.GetMatchingEventKeys(terms)
+                .Select(k => (k.ServiceName, TruncateToMinute(k.StartTime)))
+                .ToHashSet();
+            return (files, keys);
+        });
+
         _inEpgSearch      = false;
         _fileFilterActive = true;
         _dirCurrentPage   = 0;
@@ -384,6 +428,35 @@ public partial class MainWindow : Window
         DirList.Focus();
     }
 
+    // ファイルの ParsedStartTime は分精度なので、EPG 側の開始時刻も分に切り詰めて照合する
+    private static DateTime TruncateToMinute(DateTime t) =>
+        t.AddTicks(-(t.Ticks % TimeSpan.TicksPerMinute));
+
+    private static List<MediaFile> EnumerateFilesRecursive(List<string> roots)
+    {
+        var opts = new EnumerationOptions { RecurseSubdirectories = true, IgnoreInaccessible = true };
+        var result = new List<MediaFile>();
+        foreach (var root in roots)
+        {
+            foreach (var pat in new[] { "*.ts", "*.m2ts", "*.mp4" })
+            {
+                try
+                {
+                    result.AddRange(new DirectoryInfo(root).EnumerateFiles(pat, opts)
+                        .Select(fi => new MediaFile
+                        {
+                            FilePath     = fi.FullName,
+                            FileSize     = fi.Length,
+                            LastModified = fi.LastWriteTime,
+                        })
+                        .ToList());
+                }
+                catch { }
+            }
+        }
+        return result.OrderByDescending(f => f.ParsedStartTime ?? f.LastModified).ToList();
+    }
+
     private void DirList_SizeChanged(object sender, SizeChangedEventArgs e)
     {
         if (DirList.View is not GridView gv) return;
@@ -391,7 +464,7 @@ public partial class MainWindow : Window
         gv.Columns[0].Width = Math.Max(100, DirList.ActualWidth - fixed_ - 22);
     }
 
-    private void DirRefresh_Click(object sender, RoutedEventArgs e) => LoadMediaFiles();
+    private void DirRefresh_Click(object sender, RoutedEventArgs e) { _rootRetryCount = 3; LoadMediaFiles(); }
 
     private async void DirList_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
@@ -446,21 +519,26 @@ public partial class MainWindow : Window
         DirProgramInfoLabel.Visibility = Visibility.Collapsed;
         DirProgramInfo.Visibility = Visibility.Collapsed;
 
-        // events テーブルをサービス名＋開始時刻で検索して番組情報を取得
+        // events テーブルをサービス名＋開始時刻で検索して番組情報を取得。
+        // ヒットしたらタイトルも EPG 側の正式タイトル（Title2 マクロでファイル名からは
+        // 除去される [4K][HDR][字] 等のタグ付き）に差し替える
         if (file.ParsedStartTime.HasValue && !string.IsNullOrEmpty(file.ParsedStation))
         {
             var station   = file.ParsedStation;
             var startTime = file.ParsedStartTime.Value;
-            var progInfo = await Task.Run(() =>
+            var prog = await Task.Run(() =>
                 new EpgDbReaderService(_settings.DbConnectionString)
-                    .GetEventInfoTextByStationAndTime(station, startTime, file.ParsedTitle));
+                    .GetEventInfoByStationAndTime(station, startTime, file.ParsedTitle));
 
             if (!ReferenceEquals(DirList.SelectedItem, file)) return;
 
-            var hasInfo = !string.IsNullOrEmpty(progInfo);
+            if (!string.IsNullOrEmpty(prog?.EventName))
+                DirTitle.Text = prog.EventName;
+
+            var hasInfo = !string.IsNullOrEmpty(prog?.InfoText);
             DirProgramInfoLabel.Visibility = hasInfo ? Visibility.Visible : Visibility.Collapsed;
             DirProgramInfo.Visibility = DirProgramInfoLabel.Visibility;
-            DirProgramInfo.Text = progInfo ?? "";
+            DirProgramInfo.Text = prog?.InfoText ?? "";
         }
 
     }
@@ -574,6 +652,7 @@ public partial class MainWindow : Window
         switch (e.Key)
         {
             case Key.F5:
+                _rootRetryCount = 3;
                 LoadMediaFiles();
                 e.Handled = true;
                 break;
@@ -607,7 +686,7 @@ public partial class MainWindow : Window
 
     // ─── メニュー / 設定 ─────────────────────────────────────────────────────
 
-    private void Refresh_Click(object sender, RoutedEventArgs e) => LoadMediaFiles();
+    private void Refresh_Click(object sender, RoutedEventArgs e) { _rootRetryCount = 3; LoadMediaFiles(); }
 
     private EpgGuideWindow? _guideWindow;
 
@@ -634,6 +713,7 @@ public partial class MainWindow : Window
             _epgReader      = new EpgDbReaderService(_settings.DbConnectionString);
             _dirRoot        = "";
             _currentDirPath = "";
+            _rootRetryCount = 3;
             LoadMediaFiles();
         }
     }
