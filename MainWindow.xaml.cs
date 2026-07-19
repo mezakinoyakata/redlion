@@ -308,9 +308,23 @@ public partial class MainWindow : Window
         var origText = _dirOrigHeaders.TryGetValue(col, out var t) ? t : col.Header?.ToString() ?? "";
         if (!DirSortProps.TryGetValue(origText, out var prop)) return;
 
+        var selected = DirList.SelectedItem as MediaFile;
+
         ApplySort(col, prop, ref _dirActiveSortCol, ref _dirSortProp, ref _dirSortAsc, _dirOrigHeaders);
+
+        // ソート後も選択中の項目を保持し、その項目が含まれるページを表示する
         _dirCurrentPage = 0;
+        if (selected != null)
+        {
+            var idx = GetFilteredFiles().IndexOf(selected);
+            if (idx >= 0) _dirCurrentPage = idx / DirPageSize;
+        }
         ShowDirPage();
+        if (selected != null && DirList.Items.Contains(selected))
+        {
+            DirList.SelectedItem = selected;
+            DirList.ScrollIntoView(selected);
+        }
     }
 
     private static void ApplySort(
