@@ -236,6 +236,320 @@ public sealed class EpgDbReader
         catch { return []; }
     }
 
+    // ─── しょぼカル連携（最速放送判定）─────────────────────────────────────
+    // events テーブルは一切変更しない（列追加・書き込みなし）。
+    // しょぼカルの生データは専用テーブル（syobocal_*）に持ち、読み取り時に
+    // events と JOIN して最速を判定する。syobocal_* は FULLTEXT を持たないため
+    // CREATE TABLE / INSERT / DELETE はすべて高速（events の ALTER で見つかった
+    // 「FULLTEXTインデックス保持テーブルは INSTANT/INPLACE 変更不可、COPY必須で
+    // 数分以上かかる」という制約を回避できる）。
+
+    /// <summary>しょぼカル関連メソッドの直近の失敗理由（成功時は null）。</summary>
+    public string? LastSyobocalError { get; private set; }
+
+    /// <summary>syobocal_* テーブルが無ければ作成する。全て FULLTEXT なしなので高速。</summary>
+    public bool EnsureSyobocalTables()
+    {
+        LastSyobocalError = null;
+        if (!IsConfigured) return false;
+        try
+        {
+            using var conn = new MySqlConnection(_connStr);
+            conn.Open();
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = """
+                CREATE TABLE IF NOT EXISTS syobocal_airings (
+                    pid INT NOT NULL PRIMARY KEY,
+                    tid INT NOT NULL,
+                    cnt INT NULL,
+                    chid INT NOT NULL,
+                    st_time DATETIME NOT NULL,
+                    INDEX idx_tid_cnt_st (tid, cnt, st_time),
+                    INDEX idx_chid_st (chid, st_time)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+                CREATE TABLE IF NOT EXISTS syobocal_service_map (
+                    service_name VARCHAR(255) NOT NULL,
+                    chid INT NOT NULL,
+                    PRIMARY KEY (service_name, chid)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+                CREATE TABLE IF NOT EXISTS syobocal_titles (
+                    tid INT NOT NULL PRIMARY KEY,
+                    first_ym INT NOT NULL DEFAULT 0
+                ) ENGINE=InnoDB;
+                CREATE TABLE IF NOT EXISTS syobocal_meta (
+                    k VARCHAR(64) NOT NULL PRIMARY KEY,
+                    v VARCHAR(255) NOT NULL
+                ) ENGINE=InnoDB;
+                """;
+            foreach (var stmt in cmd.CommandText.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            {
+                using var c = conn.CreateCommand();
+                c.CommandText = stmt;
+                c.ExecuteNonQuery();
+            }
+            return true;
+        }
+        catch (Exception ex) { LastSyobocalError = ex.Message; return false; }
+    }
+
+    /// <summary>同期の進捗（カバー済み年月範囲・直近再取得時刻）。テーブル未作成/未同期時は全て 0/null。</summary>
+    public (int CoveredFromYm, int CoveredToYm, DateTime? LastRecentRefresh) GetSyobocalMeta()
+    {
+        if (!IsConfigured) return (0, 0, null);
+        try
+        {
+            using var conn = new MySqlConnection(_connStr);
+            conn.Open();
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = "SELECT k, v FROM syobocal_meta WHERE k IN ('covered_from_ym','covered_to_ym','last_recent_refresh')";
+            using var r = cmd.ExecuteReader();
+            var dict = new Dictionary<string, string>();
+            while (r.Read()) dict[r.GetString(0)] = r.GetString(1);
+            var from = dict.TryGetValue("covered_from_ym", out var f) && int.TryParse(f, out var fi) ? fi : 0;
+            var to   = dict.TryGetValue("covered_to_ym", out var t) && int.TryParse(t, out var ti) ? ti : 0;
+            var last = dict.TryGetValue("last_recent_refresh", out var l) && DateTime.TryParse(l, out var ld) ? (DateTime?)ld : null;
+            return (from, to, last);
+        }
+        catch { return (0, 0, null); }
+    }
+
+    public bool SetSyobocalMeta(int coveredFromYm, int coveredToYm, DateTime? lastRecentRefresh)
+    {
+        if (!IsConfigured) return false;
+        try
+        {
+            using var conn = new MySqlConnection(_connStr);
+            conn.Open();
+            using var cmd = conn.CreateCommand();
+            var sql = "INSERT INTO syobocal_meta (k,v) VALUES " +
+                      "('covered_from_ym',@f), ('covered_to_ym',@t)" +
+                      (lastRecentRefresh.HasValue ? ", ('last_recent_refresh',@l)" : "") +
+                      " ON DUPLICATE KEY UPDATE v=VALUES(v)";
+            cmd.CommandText = sql;
+            cmd.Parameters.AddWithValue("@f", coveredFromYm.ToString());
+            cmd.Parameters.AddWithValue("@t", coveredToYm.ToString());
+            if (lastRecentRefresh.HasValue)
+                cmd.Parameters.AddWithValue("@l", lastRecentRefresh.Value.ToString("yyyy-MM-dd HH:mm:ss"));
+            cmd.ExecuteNonQuery();
+            return true;
+        }
+        catch (Exception ex) { LastSyobocalError = ex.Message; return false; }
+    }
+
+    /// <summary>指定期間の syobocal_airings を削除し、新しい行群で置き換える（同期の1チャンク分）。</summary>
+    public bool ReplaceAiringsInRange(
+        DateTime rangeLo, DateTime rangeHi,
+        IReadOnlyCollection<(int Pid, int Tid, int? Cnt, int ChId, DateTime StTime)> rows)
+    {
+        LastSyobocalError = null;
+        if (!IsConfigured) return false;
+        try
+        {
+            using var conn = new MySqlConnection(_connStr);
+            conn.Open();
+            using (var del = conn.CreateCommand())
+            {
+                del.CommandText = "DELETE FROM syobocal_airings WHERE st_time >= @lo AND st_time < @hi";
+                del.Parameters.AddWithValue("@lo", rangeLo.ToString("yyyy-MM-dd HH:mm:ss"));
+                del.Parameters.AddWithValue("@hi", rangeHi.ToString("yyyy-MM-dd HH:mm:ss"));
+                del.ExecuteNonQuery();
+            }
+            foreach (var chunk in rows.Chunk(500))
+            {
+                using var ins = conn.CreateCommand();
+                var values = new List<string>();
+                int i = 0;
+                foreach (var (pid, tid, cnt, chid, st) in chunk)
+                {
+                    values.Add($"(@p{i},@t{i},@c{i},@h{i},@s{i})");
+                    ins.Parameters.AddWithValue($"@p{i}", pid);
+                    ins.Parameters.AddWithValue($"@t{i}", tid);
+                    if (cnt.HasValue) ins.Parameters.AddWithValue($"@c{i}", cnt.Value);
+                    else ins.Parameters.AddWithValue($"@c{i}", DBNull.Value);
+                    ins.Parameters.AddWithValue($"@h{i}", chid);
+                    ins.Parameters.AddWithValue($"@s{i}", st.ToString("yyyy-MM-dd HH:mm:ss"));
+                    i++;
+                }
+                if (values.Count == 0) continue;
+                ins.CommandText =
+                    "INSERT INTO syobocal_airings (pid,tid,cnt,chid,st_time) VALUES " +
+                    string.Join(",", values) +
+                    " ON DUPLICATE KEY UPDATE tid=VALUES(tid), cnt=VALUES(cnt), chid=VALUES(chid), st_time=VALUES(st_time)";
+                ins.ExecuteNonQuery();
+            }
+            return true;
+        }
+        catch (Exception ex) { LastSyobocalError = ex.Message; return false; }
+    }
+
+    /// <summary>EDCBサービス名 → しょぼカルChID の対応を差し替える。</summary>
+    public bool ReplaceServiceMap(Dictionary<string, List<int>> map)
+    {
+        if (!IsConfigured) return false;
+        try
+        {
+            using var conn = new MySqlConnection(_connStr);
+            conn.Open();
+            foreach (var kv in map)
+            {
+                using (var del = conn.CreateCommand())
+                {
+                    del.CommandText = "DELETE FROM syobocal_service_map WHERE service_name=@n";
+                    del.Parameters.AddWithValue("@n", kv.Key);
+                    del.ExecuteNonQuery();
+                }
+                if (kv.Value.Count == 0) continue;
+                using var ins = conn.CreateCommand();
+                var values = new List<string>();
+                int i = 0;
+                foreach (var chid in kv.Value)
+                {
+                    values.Add($"(@n,@c{i})");
+                    ins.Parameters.AddWithValue($"@c{i}", chid);
+                    i++;
+                }
+                ins.Parameters.AddWithValue("@n", kv.Key);
+                ins.CommandText = "INSERT IGNORE INTO syobocal_service_map (service_name, chid) VALUES " +
+                                  string.Join(",", values);
+                ins.ExecuteNonQuery();
+            }
+            return true;
+        }
+        catch (Exception ex) { LastSyobocalError = ex.Message; return false; }
+    }
+
+    public bool UpsertTitleFirstYm(Dictionary<int, int> dict)
+    {
+        if (!IsConfigured || dict.Count == 0) return false;
+        try
+        {
+            using var conn = new MySqlConnection(_connStr);
+            conn.Open();
+            foreach (var chunk in dict.Chunk(500))
+            {
+                using var ins = conn.CreateCommand();
+                var values = new List<string>();
+                int i = 0;
+                foreach (var kv in chunk)
+                {
+                    values.Add($"(@t{i},@y{i})");
+                    ins.Parameters.AddWithValue($"@t{i}", kv.Key);
+                    ins.Parameters.AddWithValue($"@y{i}", kv.Value);
+                    i++;
+                }
+                ins.CommandText = "INSERT INTO syobocal_titles (tid, first_ym) VALUES " +
+                                  string.Join(",", values) +
+                                  " ON DUPLICATE KEY UPDATE first_ym=VALUES(first_ym)";
+                ins.ExecuteNonQuery();
+            }
+            return true;
+        }
+        catch (Exception ex) { LastSyobocalError = ex.Message; return false; }
+    }
+
+    /// <summary>syobocal_titles に無い TID を返す（TitleLookup で補充すべき対象）。</summary>
+    public List<int> GetMissingTitleIds(IReadOnlyCollection<int> tids)
+    {
+        if (!IsConfigured || tids.Count == 0) return [];
+        try
+        {
+            using var conn = new MySqlConnection(_connStr);
+            conn.Open();
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = "SELECT tid FROM syobocal_titles WHERE tid IN (" +
+                              string.Join(",", tids) + ")";
+            using var r = cmd.ExecuteReader();
+            var known = new HashSet<int>();
+            while (r.Read()) known.Add(r.GetInt32(0));
+            return tids.Where(t => !known.Contains(t)).ToList();
+        }
+        catch { return tids.ToList(); }
+    }
+
+    /// <summary>
+    /// 最速放送の (サービス名, events.start_time[分精度]) を events との JOIN で求める。
+    /// 話数のない放送・作品の放送開始年月がカバー範囲より前のものは対象外。
+    /// events に対応する行が無い（=録画DBに存在しない）放送も対象外。
+    /// </summary>
+    public HashSet<(string ServiceName, DateTime StartTime)>? GetFastestKeysViaJoin(
+        DateTime lo, DateTime hi, int coveredFromYm)
+    {
+        if (!IsConfigured) return null;
+        try
+        {
+            using var conn = new MySqlConnection(_connStr);
+            conn.Open();
+            using var cmd = conn.CreateCommand();
+            cmd.CommandTimeout = 60;
+            cmd.CommandText = """
+                SELECT DISTINCT s.service_name, e.start_time
+                FROM syobocal_airings a
+                JOIN syobocal_service_map sm ON sm.chid = a.chid
+                JOIN services s ON s.service_name = sm.service_name
+                JOIN events e ON e.onid=s.onid AND e.tsid=s.tsid AND e.sid=s.sid
+                    AND e.start_time BETWEEN DATE_SUB(a.st_time, INTERVAL 5 MINUTE)
+                                          AND DATE_ADD(a.st_time, INTERVAL 5 MINUTE)
+                LEFT JOIN syobocal_titles t ON t.tid = a.tid
+                WHERE a.cnt IS NOT NULL
+                  AND a.st_time >= @lo AND a.st_time <= @hi
+                  AND (t.first_ym IS NULL OR t.first_ym = 0 OR t.first_ym >= @coveredFromYm)
+                  AND NOT EXISTS (
+                      SELECT 1 FROM syobocal_airings a2
+                      WHERE a2.tid = a.tid AND a2.cnt = a.cnt AND a2.st_time < a.st_time
+                  )
+                """;
+            cmd.Parameters.AddWithValue("@lo", lo.ToString("yyyy-MM-dd HH:mm:ss"));
+            cmd.Parameters.AddWithValue("@hi", hi.ToString("yyyy-MM-dd HH:mm:ss"));
+            cmd.Parameters.AddWithValue("@coveredFromYm", coveredFromYm);
+            using var r = cmd.ExecuteReader();
+            var set = new HashSet<(string, DateTime)>();
+            while (r.Read())
+                if (!r.IsDBNull(0) && !r.IsDBNull(1))
+                {
+                    var t = r.GetDateTime(1);
+                    set.Add((r.GetString(0), t.AddTicks(-(t.Ticks % TimeSpan.TicksPerMinute))));
+                }
+            return set;
+        }
+        catch (Exception ex) { LastSyobocalError = ex.Message; return null; }
+    }
+
+    /// <summary>services テーブルの全サービス名（しょぼカルチャンネルの逆引き用）。</summary>
+    public List<string> GetServiceNames()
+    {
+        if (!IsConfigured) return [];
+        try
+        {
+            using var conn = new MySqlConnection(_connStr);
+            conn.Open();
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = "SELECT DISTINCT service_name FROM services";
+            using var r = cmd.ExecuteReader();
+            var list = new List<string>();
+            while (r.Read())
+                if (!r.IsDBNull(0)) list.Add(r.GetString(0));
+            return list;
+        }
+        catch { return []; }
+    }
+
+    /// <summary>events テーブルの最古の開始時刻（蓄積開始点）。取得不能なら null。</summary>
+    public DateTime? GetEventsMinStartTime()
+    {
+        if (!IsConfigured) return null;
+        try
+        {
+            using var conn = new MySqlConnection(_connStr);
+            conn.Open();
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = "SELECT MIN(start_time) FROM events";
+            var v = cmd.ExecuteScalar();
+            return v is DateTime dt ? dt
+                 : v is string s && DateTime.TryParse(s, out var p) ? p : null;
+        }
+        catch { return null; }
+    }
+
     // a の3文字部分列が b に1つでも含まれるか
     internal static bool HasCommonTrigram(string a, string b)
     {

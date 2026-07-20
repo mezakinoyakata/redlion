@@ -11,6 +11,13 @@ public class MediaFile
     public DateTime LastModified { get; set; }
     public bool IsDirectory { get; set; } = false;
 
+    /// <summary>最速放送（しょぼカル照合でその話数の最も早いTV放送）の録画か。
+    /// MainWindow.ApplyFastestMarks が設定し、一覧の赤アクセントバー・最速列に使う。</summary>
+    public bool IsFastest { get; set; }
+
+    /// <summary>最速列の表示用テキスト。</summary>
+    public string FastestText => IsFastest ? "★" : "";
+
     public string DisplayName => IsDirectory
         ? "📁 " + Path.GetFileName(FilePath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar))
         : Parsed.contIdx.HasValue

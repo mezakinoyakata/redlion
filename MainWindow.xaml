@@ -8,6 +8,7 @@
         KeyDown="Window_KeyDown"
         Closing="Window_Closing">
     <Window.Resources>
+        <BooleanToVisibilityConverter x:Key="BoolToVis"/>
         <Style TargetType="ListView">
             <Setter Property="Background" Value="#FF2D2D2D"/>
             <Setter Property="Foreground" Value="#FFE0E0E0"/>
@@ -146,6 +147,11 @@
                                    Text="絞込:" Foreground="#FF888888"
                                    FontSize="12" VerticalAlignment="Center"
                                    Margin="0,0,6,0"/>
+                        <CheckBox x:Name="FastestOnlyCheck" DockPanel.Dock="Right"
+                                  Content="最速のみ" Foreground="#FFE0E0E0"
+                                  FontSize="12" VerticalAlignment="Center"
+                                  Margin="8,0,0,0"
+                                  Checked="FastestOnly_Changed" Unchecked="FastestOnly_Changed"/>
                         <TextBox x:Name="DirSearchBox"
                                  Style="{StaticResource SearchBoxStyle}"
                                  TextChanged="DirSearchBox_TextChanged"
@@ -195,8 +201,24 @@
                           SizeChanged="DirList_SizeChanged">
                     <ListView.View>
                         <GridView>
-                            <GridViewColumn Header="ファイル名" Width="400"
-                                DisplayMemberBinding="{Binding DisplayName}"/>
+                            <GridViewColumn Header="ファイル名" Width="400">
+                                <GridViewColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <!-- 最速放送はしょぼいカレンダー風に左端へ赤アクセントバー -->
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="5"/>
+                                                <ColumnDefinition Width="*"/>
+                                            </Grid.ColumnDefinitions>
+                                            <Rectangle Width="3" Fill="#FFE04848"
+                                                       HorizontalAlignment="Left"
+                                                       Visibility="{Binding IsFastest, Converter={StaticResource BoolToVis}}"/>
+                                            <TextBlock Grid.Column="1" Text="{Binding DisplayName}"
+                                                       TextTrimming="CharacterEllipsis"/>
+                                        </Grid>
+                                    </DataTemplate>
+                                </GridViewColumn.CellTemplate>
+                            </GridViewColumn>
                             <GridViewColumn Header="放送局" Width="90"
                                 DisplayMemberBinding="{Binding ParsedStation}"/>
                             <GridViewColumn Header="放送日時" Width="130">
@@ -204,6 +226,15 @@
                                     <DataTemplate>
                                         <TextBlock Text="{Binding ParsedStartTimeText}"
                                                    Foreground="#FFE0E0E0"/>
+                                    </DataTemplate>
+                                </GridViewColumn.CellTemplate>
+                            </GridViewColumn>
+                            <GridViewColumn Header="最速" Width="48">
+                                <GridViewColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <TextBlock Text="{Binding FastestText}"
+                                                   Foreground="#FFE04848"
+                                                   HorizontalAlignment="Center"/>
                                     </DataTemplate>
                                 </GridViewColumn.CellTemplate>
                             </GridViewColumn>

@@ -21,6 +21,9 @@ public partial class MainWindow : Window
     private List<MediaFile> _mediaFiles = [];
     private List<MediaFile>? _searchFiles;  // Enter検索の再帰列挙結果（null=通常ブラウズ）
     private HashSet<(string Station, DateTime Start)>? _searchEpgKeys;  // EPG照合ヒットの (放送局, 開始時刻[分精度])
+    private readonly SyobocalService _syobocal = new();  // しょぼカル連携（最速放送判定）
+    private bool _syoboSyncing;
+    private HashSet<(string Station, DateTime Start)>? _fastestKeys;  // events.fastest=1 の (サービス名, 開始時刻[分精度])
     private int _rootRetryCount = 3;        // 未接続フォルダの自動再読込の残り回数（無限ループ防止）
     private MediaFile? _selectedMediaFile;
     private int _dirCurrentPage = 0;
@@ -37,6 +40,7 @@ public partial class MainWindow : Window
         ["ファイル名"] = "ParsedTitle",
         ["放送局"]     = "ParsedStation",
         ["放送日時"]   = "ParsedStartTime",
+        ["最速"]       = "IsFastest",
     };
 
     private string _dirRoot = "";
@@ -55,6 +59,91 @@ public partial class MainWindow : Window
         InitSortHeaders();
         _recordingIndex.Load();
         Loaded += (_, _) => LoadMediaFiles();
+    }
+
+    /// <summary>
+    /// 最速放送マークの整備。しょぼカルの生データは MySQL の syobocal_* 専用テーブルに
+    /// 保存し（events は一切変更しない）、判定は events との JOIN で都度計算する。
+    /// どのマシンから起動しても syobocal_* を共有するため同じ判定が見える。
+    /// ① まず DB の現在の syobocal_* + events の JOIN 結果で即マーク反映
+    ///    （別マシンが同期済み、または前回起動分ならここで出る）
+    /// ② しょぼカルを同期（events 蓄積期間のみ。カバー済みなら通信なし）
+    /// ③ 同期で更新があれば JOIN 結果を読み直して再反映
+    /// </summary>
+    private async void LoadSyobocal()
+    {
+        if (_syoboSyncing) return;
+        _syoboSyncing = true;
+        try
+        {
+            var reader = _epgReader;
+            if (!reader.IsConfigured) return;
+
+            var eventsMin = await Task.Run(reader.GetEventsMinStartTime);
+            if (eventsMin == null) return;
+
+            // ① DB の現在値で即マーク
+            var (coveredFrom, _, _) = await Task.Run(reader.GetSyobocalMeta);
+            if (coveredFrom != 0)
+            {
+                var keysNow = await Task.Run(() =>
+                    reader.GetFastestKeysViaJoin(eventsMin.Value, DateTime.Now, coveredFrom));
+                if (keysNow != null && !SetEquals(_fastestKeys, keysNow))
+                {
+                    _fastestKeys = keysNow;
+                    RefreshFastestMarks();
+                }
+            }
+
+            // ② events の蓄積期間（それ以前の録画は判定対象外）に絞って同期
+            var fileKeys = _mediaFiles.Concat(_searchFiles ?? [])
+                .Where(f => !f.IsDirectory && f.ParsedStartTime.HasValue && !string.IsNullOrEmpty(f.ParsedStation))
+                .Select(f => (f.ParsedStation, f.ParsedStartTime!.Value))
+                .Where(k => k.Item2 >= eventsMin.Value)
+                .Distinct()
+                .ToList();
+            if (fileKeys.Count == 0) return;
+
+            var changed = await _syobocal.SyncToDbAsync(
+                reader, fileKeys, eventsMin.Value, msg => StatusText.Text = msg);
+            if (!changed) return;
+
+            // ③ 読み直して反映
+            var (coveredFrom2, _, _) = await Task.Run(reader.GetSyobocalMeta);
+            if (coveredFrom2 == 0) return;
+            _fastestKeys = await Task.Run(() =>
+                reader.GetFastestKeysViaJoin(eventsMin.Value, DateTime.Now, coveredFrom2)) ?? _fastestKeys;
+            RefreshFastestMarks();
+        }
+        finally { _syoboSyncing = false; }
+    }
+
+    private static bool SetEquals(HashSet<(string, DateTime)>? a, HashSet<(string, DateTime)> b) =>
+        a != null && a.Count == b.Count && a.SetEquals(b);
+
+    private void RefreshFastestMarks()
+    {
+        ApplyFastestMarks(_mediaFiles);
+        if (_searchFiles != null) ApplyFastestMarks(_searchFiles);
+        var selected = DirList.SelectedItem as MediaFile;
+        ShowDirPage();
+        if (selected != null && DirList.Items.Contains(selected))
+        {
+            DirList.SelectedItem = selected;
+            DirList.ScrollIntoView(selected);
+        }
+    }
+
+    /// <summary>
+    /// 最速放送マーク: events.fastest=1 の (サービス名, 開始時刻) セットと
+    /// ファイルの (放送局, 開始時刻[分精度]) を照合して IsFastest を立てる。
+    /// </summary>
+    private void ApplyFastestMarks(List<MediaFile> files)
+    {
+        var keys = _fastestKeys;
+        foreach (var f in files)
+            f.IsFastest = keys != null && !f.IsDirectory && f.ParsedStartTime.HasValue &&
+                keys.Contains((f.ParsedStation, f.ParsedStartTime.Value));
     }
 
     private void InitSortHeaders()
@@ -151,11 +240,13 @@ public partial class MainWindow : Window
             });
 
             _mediaFiles     = merged;
+            ApplyFastestMarks(_mediaFiles);
             _inEpgSearch    = false;
             _dirCurrentPage = 0;
             UpdateDirAddressBar();
             ShowDirPage();
             DirList.Focus();
+            LoadSyobocal();
 
             // 起動直後にネットワーク未接続だったフォルダがあれば 5 秒後に再読込。
             // 空フォルダも「未接続」と区別できないため、リトライは回数制限付き
@@ -222,10 +313,12 @@ public partial class MainWindow : Window
         }
 
         _mediaFiles = all;
+        ApplyFastestMarks(_mediaFiles);
         _dirCurrentPage = 0;
         UpdateDirAddressBar();
         ShowDirPage();
         DirList.Focus();
+        LoadSyobocal();
     }
 
     private void UpdateDirAddressBar()
@@ -259,13 +352,16 @@ public partial class MainWindow : Window
 
     private List<MediaFile> GetFilteredFiles()
     {
-        // 検索モード中は再帰列挙結果（ファイルのみ）を対象にし、フォルダは表示しない
-        IEnumerable<MediaFile> dirs = _fileFilterActive && _searchFiles != null
+        // 検索モード・最速のみ表示中はファイルのみを対象にし、フォルダは表示しない
+        var fastestOnly = FastestOnlyCheck.IsChecked == true;
+        IEnumerable<MediaFile> dirs = (_fileFilterActive && _searchFiles != null) || fastestOnly
             ? []
             : _mediaFiles.Where(f => f.IsDirectory).OrderBy(d => d.DisplayName);
         IEnumerable<MediaFile> files = _fileFilterActive && _searchFiles != null
             ? _searchFiles
             : _mediaFiles.Where(f => !f.IsDirectory);
+        if (fastestOnly)
+            files = files.Where(f => f.IsFastest);
 
         if (_fileFilterActive)
         {
@@ -291,6 +387,12 @@ public partial class MainWindow : Window
                 "ParsedTitle"     => (a, b) => string.Compare(a.ParsedTitle,   b.ParsedTitle,   StringComparison.CurrentCulture),
                 "ParsedStation"   => (a, b) => string.Compare(a.ParsedStation, b.ParsedStation, StringComparison.CurrentCulture),
                 "ParsedStartTime" => (a, b) => (a.ParsedStartTime ?? DateTime.MinValue).CompareTo(b.ParsedStartTime ?? DateTime.MinValue),
+                // 最速列は初回クリック（▲）で最速が先頭に来るよう降順比較。同順位は放送日時の新しい順
+                "IsFastest"       => (a, b) =>
+                {
+                    var c = b.IsFastest.CompareTo(a.IsFastest);
+                    return c != 0 ? c : (b.ParsedStartTime ?? b.LastModified).CompareTo(a.ParsedStartTime ?? a.LastModified);
+                },
                 _                 => (a, b) => (a.ParsedStartTime ?? a.LastModified).CompareTo(b.ParsedStartTime ?? b.LastModified),
             };
             var fileList = files.ToList();
@@ -432,6 +534,7 @@ public partial class MainWindow : Window
                 .ToHashSet();
             return (files, keys);
         });
+        ApplyFastestMarks(_searchFiles);
 
         _inEpgSearch      = false;
         _fileFilterActive = true;
@@ -440,6 +543,7 @@ public partial class MainWindow : Window
 
         if (DirList.Items.Count > 0) DirList.SelectedIndex = 0;
         DirList.Focus();
+        LoadSyobocal();
     }
 
     // ファイルの ParsedStartTime は分精度なので、EPG 側の開始時刻も分に切り詰めて照合する
@@ -479,6 +583,13 @@ public partial class MainWindow : Window
     }
 
     private void DirRefresh_Click(object sender, RoutedEventArgs e) { _rootRetryCount = 3; LoadMediaFiles(); }
+
+    private void FastestOnly_Changed(object sender, RoutedEventArgs e)
+    {
+        if (!IsLoaded) return;
+        _dirCurrentPage = 0;
+        ShowDirPage();
+    }
 
     private async void DirList_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {

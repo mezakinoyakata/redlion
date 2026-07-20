@@ -98,6 +98,13 @@ EDCBViewer/
 - サブフォルダは `📁 フォルダ名` 形式でリスト上部に名前順表示
 - ファイルは ParsedStartTime 降順（解析できない場合は LastModified 降順）
 - ダブルクリックまたは Enter でサブフォルダに移動 / ファイルを再生
+- **最速放送マーク**（2026-07-19、しょぼいカレンダー連携）: そのファイルが
+  **アニメの当該話数の最速TV放送の録画**なら、ファイル名の左端に赤アクセントバーと
+  最速列に「★」を表示（通常ブラウズ・検索結果の両方）。詳細は「しょぼいカレンダー連携」の章を参照
+  - **最速列**: ヘッダークリックでソート可能。初回クリック（▲）で最速が先頭、
+    同順位は放送日時の新しい順
+  - **最速のみチェックボックス**（絞込バー右端）: ON にすると最速ファイルだけを表示
+    （フォルダ非表示、通常ブラウズ・検索結果の両方に適用）
 
 ### ファイル名パース（MediaFile）
 
@@ -208,7 +215,7 @@ EDCB RecName_Macro.DLL フォーマット
 
 | タブ | ソート可能列 |
 |---|---|
-| ディレクトリ | ファイル名・放送局・放送日時 |
+| ディレクトリ | ファイル名・放送局・放送日時・最速 |
 
 ---
 
@@ -246,6 +253,14 @@ EDCB RecName_Macro.DLL フォーマット
 ## MySQL EPG DB 連携
 
 > **EDCBViewer は events テーブルに書き込まない。** 書き込みは EpgTimerSrv が行う。
+> 最速放送マーク（しょぼいカレンダー連携）用に `syobocal_*` という別テーブル群を
+> 追加するが、これらは EDCBViewer 専用の新規テーブルであり events には触れない。
+> 理由: events には全文検索用 FULLTEXT インデックス（`ft_event`）があり、MySQL/InnoDB は
+> FULLTEXT 保持テーブルへの列追加を高速な `ALGORITHM=INSTANT`/`INPLACE` で行えない。
+> 唯一可能な `ALGORITHM=COPY`（テーブル全体再構築）を実測したところ3分以上かかっても
+> 完了せず、実行中は events への読み書きをブロックする。events への列追加は
+> EpgTimerSrv・EpgTimer 側の動作を阻害するリスクがあるため採用しない
+> （2026-07-20、`events.fastest` 列を追加する初期実装を検証中にこの問題が判明し撤回）。
 
 - クラス: `Services/EpgDbReader.cs`
 - 接続文字列: `AppSettings.DbConnectionString`
@@ -259,6 +274,92 @@ EDCB RecName_Macro.DLL フォーマット
 | `GetEventInfoByStationAndTime(station, startTime, preferTitle)` | 放送局名 + 開始時刻 ±2分で検索し (event_name, 説明文) を返す。preferTitle とのトリグラム照合で誤マッチを除外 |
 | `GetGuideEvents(rangeStart, rangeEnd)` | 番組表用。時間範囲の全TVサービスのイベント（ジャンル付き、本文なし）を表示順で返す |
 | `GetMatchingEventKeys(terms)` | 絞込検索用。全語（AND）が番組名・説明文のいずれかに LIKE 一致するイベントの (service_name, start_time) を返す |
+
+---
+
+## しょぼいカレンダー連携（SyobocalService）
+
+最速放送マークの判定に https://cal.syoboi.jp/ の API（db.php）を利用する。
+
+### データの置き場: syobocal_* 専用テーブル（DB共有、events は不変更）
+
+しょぼカルの生データ（放送レコード・チャンネル対応・作品情報・同期進捗）は
+**`syobocal_*` という EDCBViewer 専用の新規テーブル群**に持つ。events には一切書かない。
+最速判定は**表示のたびに events との JOIN で計算**する（`GetFastestKeysViaJoin`）。
+どのマシンから起動しても syobocal_* を共有するため同じ判定結果が見える。
+
+| テーブル | 内容 |
+|---|---|
+| `syobocal_airings` | 放送レコード。`pid`(PK) `tid` `cnt`(話数、映画等はNULL) `chid` `st_time`。**TV放送のみ格納**（ABEMA等の配信・ラジオは取得時点で除外） |
+| `syobocal_service_map` | EDCBサービス名 → しょぼカルChID（複数可）の対応表 |
+| `syobocal_titles` | `tid`(PK) `first_ym`（作品の放送開始年月、yyyy*100+MM。不明時0） |
+| `syobocal_meta` | key-value。`covered_from_ym` / `covered_to_ym`（連続カバー済み月範囲） / `last_recent_refresh` |
+
+いずれも FULLTEXT インデックスを持たないため、`CREATE TABLE IF NOT EXISTS` も
+書き込みも高速（events の ALTER で判明した COPY アルゴリズム問題を回避できる）。
+
+### 判定方法（EpgDbReader.GetFastestKeysViaJoin）
+
+`syobocal_airings` を `syobocal_service_map` → `services` → `events` と JOIN し、
+`events.start_time` を鍵とする (サービス名, 開始時刻) の最速集合を1クエリで得る:
+
+```sql
+SELECT DISTINCT s.service_name, e.start_time
+FROM syobocal_airings a
+JOIN syobocal_service_map sm ON sm.chid = a.chid
+JOIN services s ON s.service_name = sm.service_name
+JOIN events e ON e.onid=s.onid AND e.tsid=s.tsid AND e.sid=s.sid
+    AND e.start_time BETWEEN DATE_SUB(a.st_time, INTERVAL 5 MINUTE)
+                          AND DATE_ADD(a.st_time, INTERVAL 5 MINUTE)
+LEFT JOIN syobocal_titles t ON t.tid = a.tid
+WHERE a.cnt IS NOT NULL
+  AND a.st_time >= @lo AND a.st_time <= @hi
+  AND (t.first_ym IS NULL OR t.first_ym = 0 OR t.first_ym >= @coveredFromYm)
+  AND NOT EXISTS (
+      SELECT 1 FROM syobocal_airings a2
+      WHERE a2.tid = a.tid AND a2.cnt = a.cnt AND a2.st_time < a.st_time
+  )
+```
+
+- タイトル文字列は一切使わない（局によるタイトル表記の違いに影響されない）。
+  `syobocal_airings` には TV 放送のみ格納済みのため、`NOT EXISTS` の比較は自動的に
+  TV 放送同士の比較になる（ABEMA 等の先行配信の混入なし）
+- `events` との JOIN は ±5分の許容窓。しょぼカル記載時刻と EPG 実測時刻の
+  わずかなズレを吸収しつつ、**events に対応する行が無い放送は結果から除外**される
+  （録画DBに存在しない＝実際に確認できていない放送は最速扱いしない）
+- 話数なし（映画・特番等）は対象外
+- 作品の放送開始年月（`syobocal_titles.first_ym`）がカバー範囲（`covered_from_ym`）
+  より前の場合は、それ以前の放送を知らないため対象外
+- 表示側は結果セットとファイルの (ParsedStation, ParsedStartTime[分精度]) を照合する
+
+### 同期（SyobocalService.SyncToDbAsync）・API 負荷配慮
+
+1. `ChLookup` でチャンネル一覧を取得し EDCB サービス名と対応付ける
+   （NFKC 正規化 + 空白・中点・ハイフン除去 + 大文字化 → 完全一致 → 前方一致 → 包含。
+   `NHKBSP4K`「テレ東」「日テレ」等の自動照合不能分は手動エイリアス表。候補は複数保持可）
+   → `syobocal_service_map` へ反映
+2. `syobocal_meta` のカバー済み月範囲（`covered_from_ym`/`covered_to_ym`）を読み、
+   ファイル群の放送時期（events 蓄積開始以降にクランプ）を覆うために必要な差分だけを
+   **2か月チャンク**で `ProgLookup` 取得し、`syobocal_airings` へチャンクごとに反映
+   （既にカバー済みなら通信なし。他マシンが先に同期済みでもここで恩恵を受ける）
+   - 1リクエスト5,000件上限に達したら期間を半分にして再帰取得
+     （切り捨て検出は Deleted 行込みの生件数 ≥4,900 で判定。有効行だけで判定すると
+     末尾欠けを見逃す — 7/17 以降が欠落した実績あり）
+   - 途中で失敗したら残りを中断し次回同期時に再開
+     （途中の月を飛ばすとカバー範囲の連続性が壊れるため中断が正しい）。
+     カバー範囲はチャンクごとに `syobocal_meta` へ保存（中断しても進捗が残る）
+   - 直近2か月は改編対応のため再取得する（最短1時間間隔）
+3. 今回取得範囲に登場した作品IDのうち `syobocal_titles` に無いものを `TitleLookup` で補充
+- **リクエスト間 2秒**（700ms では十数リクエストで 429 になることを実測）。
+  429 (Too Many Requests) は 15→30→60秒バックオフで最大3回再試行
+- User-Agent `EDCBViewer/1.0`
+- 同期の各段階・失敗は `%LOCALAPPDATA%\EDCBViewer\syobocal.log` に記録。
+  失敗時はステータスバーに「しょぼカル同期失敗（syobocal.log 参照）」を表示
+- オフライン・API 障害時は例外を握りつぶし、DB の既存データの範囲で判定を続行
+- 同期は `MainWindow.LoadSyobocal` がファイル一覧読み込み後にバックグラウンド実行。
+  まず DB の現在値で即マーク反映（他マシン同期済みならここで出る）→ 同期 →
+  更新があれば読み直して再反映（選択位置は保持）。進捗はステータスバーに表示
+- **制限: events の蓄積期間（2026-04-27〜）より前の録画は判定対象外（マークなし）**
 | `SearchEvents(keyword, limit=200)` | 全文検索。REGEXP フレーズ → AND LIKE フォールバック（現在 UI 未使用） |
 | `HasCommonTrigram(a, b)` | internal。3文字部分列の共通有無（テストから参照） |
 
