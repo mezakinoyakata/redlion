@@ -481,14 +481,25 @@ public sealed class EpgDbReader
             conn.Open();
             using var cmd = conn.CreateCommand();
             cmd.CommandTimeout = 60;
+            // events との対応は「±5分以内で最も近い1件」に限定する。単純な BETWEEN だと、
+            // 同じ局で数分差の別番組が同時に存在する場合（実例: MX 01:00 の別アニメと
+            // 01:05 のアズールレーンが両方 01:00 の syobocal 行にマッチしてしまった）、
+            // 1つの syobocal 行が複数の events 行を誤って道連れにし、無関係な放送枠まで
+            // 最速扱いになるバグが起きる（2026-07-20 実データで発見）。
             cmd.CommandText = """
                 SELECT DISTINCT s.service_name, e.start_time
                 FROM syobocal_airings a
                 JOIN syobocal_service_map sm ON sm.chid = a.chid
                 JOIN services s ON s.service_name = sm.service_name
                 JOIN events e ON e.onid=s.onid AND e.tsid=s.tsid AND e.sid=s.sid
-                    AND e.start_time BETWEEN DATE_SUB(a.st_time, INTERVAL 5 MINUTE)
-                                          AND DATE_ADD(a.st_time, INTERVAL 5 MINUTE)
+                    AND e.start_time = (
+                        SELECT e2.start_time FROM events e2
+                        WHERE e2.onid=s.onid AND e2.tsid=s.tsid AND e2.sid=s.sid
+                          AND e2.start_time BETWEEN DATE_SUB(a.st_time, INTERVAL 5 MINUTE)
+                                                 AND DATE_ADD(a.st_time, INTERVAL 5 MINUTE)
+                        ORDER BY ABS(TIMESTAMPDIFF(SECOND, e2.start_time, a.st_time))
+                        LIMIT 1
+                    )
                 LEFT JOIN syobocal_titles t ON t.tid = a.tid
                 WHERE a.cnt IS NOT NULL
                   AND a.st_time >= @lo AND a.st_time <= @hi
