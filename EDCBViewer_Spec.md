@@ -309,8 +309,14 @@ FROM syobocal_airings a
 JOIN syobocal_service_map sm ON sm.chid = a.chid
 JOIN services s ON s.service_name = sm.service_name
 JOIN events e ON e.onid=s.onid AND e.tsid=s.tsid AND e.sid=s.sid
-    AND e.start_time BETWEEN DATE_SUB(a.st_time, INTERVAL 5 MINUTE)
-                          AND DATE_ADD(a.st_time, INTERVAL 5 MINUTE)
+    AND e.start_time = (
+        SELECT e2.start_time FROM events e2
+        WHERE e2.onid=s.onid AND e2.tsid=s.tsid AND e2.sid=s.sid
+          AND e2.start_time BETWEEN DATE_SUB(a.st_time, INTERVAL 5 MINUTE)
+                                 AND DATE_ADD(a.st_time, INTERVAL 5 MINUTE)
+        ORDER BY ABS(TIMESTAMPDIFF(SECOND, e2.start_time, a.st_time))
+        LIMIT 1
+    )
 LEFT JOIN syobocal_titles t ON t.tid = a.tid
 WHERE a.cnt IS NOT NULL
   AND a.st_time >= @lo AND a.st_time <= @hi
@@ -324,8 +330,12 @@ WHERE a.cnt IS NOT NULL
 - タイトル文字列は一切使わない（局によるタイトル表記の違いに影響されない）。
   `syobocal_airings` には TV 放送のみ格納済みのため、`NOT EXISTS` の比較は自動的に
   TV 放送同士の比較になる（ABEMA 等の先行配信の混入なし）
-- `events` との JOIN は ±5分の許容窓。しょぼカル記載時刻と EPG 実測時刻の
-  わずかなズレを吸収しつつ、**events に対応する行が無い放送は結果から除外**される
+- `events` との対応付けは**±5分以内で最も近い1件のみ**（サブクエリで1件に絞る）。
+  単純な `BETWEEN` だと、同じ局で数分差の別番組が同時にあった場合、1つの syobocal 行が
+  複数の events 行を誤って道連れにし、無関係な放送枠まで最速扱いになるバグが起きる
+  （実例: MX 01:00「同じゼミの染谷さんが～」と 01:05「アズールレーン びそくぜんしんっ！にっ！！」が
+  01:00 の syobocal 行に両方マッチし、後者が誤って最速扱いされた。2026-07-20 発見・修正）
+- **events に対応する行が無い放送は結果から除外**される
   （録画DBに存在しない＝実際に確認できていない放送は最速扱いしない）
 - 話数なし（映画・特番等）は対象外
 - 作品の放送開始年月（`syobocal_titles.first_ym`）がカバー範囲（`covered_from_ym`）
