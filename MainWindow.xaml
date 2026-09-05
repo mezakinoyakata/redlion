@@ -5,8 +5,7 @@
         Background="#FF1E1E1E"
         PreviewKeyDown="Window_PreviewKeyDown"
         PreviewTextInput="Window_PreviewTextInput"
-        KeyDown="Window_KeyDown"
-        Closing="Window_Closing">
+        KeyDown="Window_KeyDown">
     <Window.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVis"/>
         <Style TargetType="ListView">

@@ -1,11 +1,9 @@
-using System.ComponentModel;
 using System.Diagnostics;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using EDCBViewer.Models;
 using EDCBViewer.Services;
-using RecordingIndexService = EDCBViewer.Services.RecordingIndex;
 using EpgDbReaderService = EDCBViewer.Services.EpgDbReader;
 
 namespace EDCBViewer;
@@ -13,7 +11,6 @@ namespace EDCBViewer;
 public partial class MainWindow : Window
 {
     private AppSettings _settings = AppSettings.Load();
-    private RecordingIndexService _recordingIndex = null!;
     private EpgDbReaderService    _epgReader       = null!;
     private bool _inEpgSearch     = false;
     private bool _fileFilterActive = false;  // Enter押下時のみtrue、ナビゲート時にリセット
@@ -52,12 +49,10 @@ public partial class MainWindow : Window
         InitializeComponent();
         DarkTitleBar.Apply(this);
         HorizontalWheel.Attach(this);
-        _recordingIndex = new RecordingIndexService(_settings.DbConnectionString);
         _epgReader      = new EpgDbReaderService(_settings.DbConnectionString);
         _dirRoot        = "";
         _currentDirPath = "";
         InitSortHeaders();
-        _recordingIndex.Load();
         Loaded += (_, _) => LoadMediaFiles();
     }
 
@@ -82,20 +77,8 @@ public partial class MainWindow : Window
             var eventsMin = await Task.Run(reader.GetEventsMinStartTime);
             if (eventsMin == null) return;
 
-            // ① DB の現在値で即マーク
-            var (coveredFrom, _, _) = await Task.Run(reader.GetSyobocalMeta);
-            if (coveredFrom != 0)
-            {
-                var keysNow = await Task.Run(() =>
-                    reader.GetFastestKeysViaJoin(eventsMin.Value, DateTime.Now, coveredFrom));
-                if (keysNow != null && !SetEquals(_fastestKeys, keysNow))
-                {
-                    _fastestKeys = keysNow;
-                    RefreshFastestMarks();
-                }
-            }
-
-            // ② events の蓄積期間（それ以前の録画は判定対象外）に絞って同期
+            // 判定対象のファイル（events の蓄積期間内のもののみ）。
+            // 判定クエリにも渡して events 側を先に絞る（渡さないと局単位で全走査になる）。
             var fileKeys = _mediaFiles.Concat(_searchFiles ?? [])
                 .Where(f => !f.IsDirectory && f.ParsedStartTime.HasValue && !string.IsNullOrEmpty(f.ParsedStation))
                 .Select(f => (f.ParsedStation, f.ParsedStartTime!.Value))
@@ -104,6 +87,20 @@ public partial class MainWindow : Window
                 .ToList();
             if (fileKeys.Count == 0) return;
 
+            // ① DB の現在値で即マーク
+            var (coveredFrom, _, _) = await Task.Run(reader.GetSyobocalMeta);
+            if (coveredFrom != 0)
+            {
+                var keysNow = await Task.Run(() =>
+                    reader.GetFastestKeysViaJoin(eventsMin.Value, DateTime.Now, coveredFrom, fileKeys));
+                if (keysNow != null && !SetEquals(_fastestKeys, keysNow))
+                {
+                    _fastestKeys = keysNow;
+                    RefreshFastestMarks();
+                }
+            }
+
+            // ② しょぼカル同期（カバー済みなら通信なし）
             var changed = await _syobocal.SyncToDbAsync(
                 reader, fileKeys, eventsMin.Value, msg => StatusText.Text = msg);
             if (!changed) return;
@@ -112,7 +109,7 @@ public partial class MainWindow : Window
             var (coveredFrom2, _, _) = await Task.Run(reader.GetSyobocalMeta);
             if (coveredFrom2 == 0) return;
             _fastestKeys = await Task.Run(() =>
-                reader.GetFastestKeysViaJoin(eventsMin.Value, DateTime.Now, coveredFrom2)) ?? _fastestKeys;
+                reader.GetFastestKeysViaJoin(eventsMin.Value, DateTime.Now, coveredFrom2, fileKeys)) ?? _fastestKeys;
             RefreshFastestMarks();
         }
         finally { _syoboSyncing = false; }
@@ -644,19 +641,34 @@ public partial class MainWindow : Window
         DirProgramInfoLabel.Visibility = Visibility.Collapsed;
         DirProgramInfo.Visibility = Visibility.Collapsed;
 
+        // ドロップ／スクランブル（録画ファイル隣の .err）と番組情報（events）は
+        // 互いに独立した I/O なので、直列に待たず並行して取りに行く
+        var dropsPath = file.FilePath;
+        var dropsTask = Task.Run(() => TsErrInfo.Format(dropsPath));
+
         // events テーブルをサービス名＋開始時刻で検索して番組情報を取得。
         // ヒットしたらタイトルも EPG 側の正式タイトル（Title2 マクロでファイル名からは
         // 除去される [4K][HDR][字] 等のタグ付き）に差し替える
+        Task<EpgDbReaderService.EventDisplayInfo?>? progTask = null;
         if (file.ParsedStartTime.HasValue && !string.IsNullOrEmpty(file.ParsedStation))
         {
             var station   = file.ParsedStation;
             var startTime = file.ParsedStartTime.Value;
-            var prog = await Task.Run(() =>
+            progTask = Task.Run(() =>
                 new EpgDbReaderService(_settings.DbConnectionString)
                     .GetEventInfoByStationAndTime(station, startTime, file.ParsedTitle));
+        }
 
-            if (!ReferenceEquals(DirList.SelectedItem, file)) return;
+        var dropsText = await dropsTask;
+        var prog = progTask == null ? null : await progTask;
 
+        // 待っている間に選択が変わっていたら、古い結果で上書きしない
+        if (!ReferenceEquals(DirList.SelectedItem, file)) return;
+
+        DirDrops.Text = dropsText;
+
+        if (progTask != null)
+        {
             if (!string.IsNullOrEmpty(prog?.EventName))
                 DirTitle.Text = prog.EventName;
 
@@ -665,7 +677,6 @@ public partial class MainWindow : Window
             DirProgramInfo.Visibility = DirProgramInfoLabel.Visibility;
             DirProgramInfo.Text = prog?.InfoText ?? "";
         }
-
     }
 
     private void DirList_DoubleClick(object sender, MouseButtonEventArgs e)
@@ -833,18 +844,11 @@ public partial class MainWindow : Window
         {
             _settings = win.Settings;
             _settings.Save();
-            _recordingIndex = new RecordingIndexService(_settings.DbConnectionString);
-            _recordingIndex.Load();
             _epgReader      = new EpgDbReaderService(_settings.DbConnectionString);
             _dirRoot        = "";
             _currentDirPath = "";
             _rootRetryCount = 3;
             LoadMediaFiles();
         }
-    }
-
-    private void Window_Closing(object sender, CancelEventArgs e)
-    {
-        _recordingIndex.Dispose();
     }
 }

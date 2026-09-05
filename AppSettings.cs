@@ -19,9 +19,6 @@ public class AppSettings
     /// <summary>起点フォルダのリスト（ディレクトリタブでルートとして表示）。</summary>
     public List<string> EncodedFolders { get; set; } = new();
 
-    /// <summary>EDCBのEPGデータフォルダ（*_epg.dat が置かれている場所）。</summary>
-    public string EpgDataFolder { get; set; } = "";
-
     /// <summary>MySQL 接続文字列（例: Server=5600x;Database=edcbviewer;Uid=edcb;Pwd=pass）</summary>
     public string DbConnectionString { get; set; } = "";
 
@@ -30,12 +27,6 @@ public class AppSettings
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "EDCBViewer",
             "settings.json");
-
-    public static string ProgInfoCachePath =>
-        Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "EDCBViewer",
-            "proginfo_cache.json");
 
     public static AppSettings Load()
     {

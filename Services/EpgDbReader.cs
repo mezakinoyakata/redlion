@@ -472,23 +472,39 @@ public sealed class EpgDbReader
     /// events に対応する行が無い（=録画DBに存在しない）放送も対象外。
     /// </summary>
     public HashSet<(string ServiceName, DateTime StartTime)>? GetFastestKeysViaJoin(
-        DateTime lo, DateTime hi, int coveredFromYm)
+        DateTime lo, DateTime hi, int coveredFromYm,
+        IReadOnlyCollection<(string Station, DateTime Time)>? fileKeys = null)
     {
         if (!IsConfigured) return null;
         try
         {
             using var conn = new MySqlConnection(_connStr);
             conn.Open();
+
+            // 手持ちの録画ファイル分だけに絞る。これが無いと events を局単位で全走査するため、
+            // 実測で 1,400 万行読んで 2 千行しか使わない状態になる（2026-09-02 EXPLAIN ANALYZE）。
+            var useFileKeys = fileKeys is { Count: > 0 };
+            if (useFileKeys) CreateFileKeyTempTable(conn, fileKeys!);
+
             using var cmd = conn.CreateCommand();
             cmd.CommandTimeout = 60;
-            cmd.CommandText = """
+            cmd.CommandText = $"""
                 SELECT DISTINCT s.service_name, e.start_time
                 FROM syobocal_airings a
                 JOIN syobocal_service_map sm ON sm.chid = a.chid
                 JOIN services s ON s.service_name = sm.service_name
+                {(useFileKeys ? """
+                JOIN tmp_file_keys fk ON fk.service_name = s.service_name
+                JOIN events e ON e.start_time >= fk.start_time
+                    AND e.start_time < fk.start_time + INTERVAL 1 MINUTE
+                    AND e.onid=s.onid AND e.tsid=s.tsid AND e.sid=s.sid
+                    AND e.start_time BETWEEN DATE_SUB(a.st_time, INTERVAL 5 MINUTE)
+                                          AND DATE_ADD(a.st_time, INTERVAL 5 MINUTE)
+                """ : """
                 JOIN events e ON e.onid=s.onid AND e.tsid=s.tsid AND e.sid=s.sid
                     AND e.start_time BETWEEN DATE_SUB(a.st_time, INTERVAL 5 MINUTE)
                                           AND DATE_ADD(a.st_time, INTERVAL 5 MINUTE)
+                """)}
                 LEFT JOIN syobocal_titles t ON t.tid = a.tid
                 WHERE a.cnt IS NOT NULL
                   AND a.st_time >= @lo AND a.st_time <= @hi
@@ -512,6 +528,52 @@ public sealed class EpgDbReader
             return set;
         }
         catch (Exception ex) { LastSyobocalError = ex.Message; return null; }
+    }
+
+    /// <summary>
+    /// 手持ちの録画ファイルの (局名, 開始時刻[分単位]) を一時テーブルに載せる。
+    /// service_name は services.service_name と同じ型・照合順序（varchar(256) utf8mb4_0900_ai_ci）に
+    /// 揃えないと、結合時に文字コード変換が入って索引が効かなくなる。
+    /// </summary>
+    private static void CreateFileKeyTempTable(
+        MySqlConnection conn, IReadOnlyCollection<(string Station, DateTime Time)> fileKeys)
+    {
+        using (var drop = conn.CreateCommand())
+        {
+            // 接続プール経由で同じ接続が再利用されると前回の一時テーブルが残るため必ず落とす
+            drop.CommandText = "DROP TEMPORARY TABLE IF EXISTS tmp_file_keys";
+            drop.ExecuteNonQuery();
+        }
+        using (var create = conn.CreateCommand())
+        {
+            create.CommandText = """
+                CREATE TEMPORARY TABLE tmp_file_keys (
+                    service_name VARCHAR(256) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
+                    start_time   DATETIME NOT NULL,
+                    PRIMARY KEY (service_name, start_time)
+                )
+                """;
+            create.ExecuteNonQuery();
+        }
+        foreach (var chunk in fileKeys.Chunk(500))
+        {
+            using var ins = conn.CreateCommand();
+            var values = new List<string>();
+            int i = 0;
+            foreach (var (station, time) in chunk)
+            {
+                values.Add($"(@n{i},@s{i})");
+                ins.Parameters.AddWithValue($"@n{i}", station);
+                ins.Parameters.AddWithValue($"@s{i}", time.ToString("yyyy-MM-dd HH:mm:00"));
+                i++;
+            }
+            if (values.Count == 0) continue;
+            // 同一局・同一分のファイルが複数あっても落とさない
+            ins.CommandText =
+                "INSERT IGNORE INTO tmp_file_keys (service_name, start_time) VALUES " +
+                string.Join(",", values);
+            ins.ExecuteNonQuery();
+        }
     }
 
     /// <summary>services テーブルの全サービス名（しょぼカルチャンネルの逆引き用）。</summary>
