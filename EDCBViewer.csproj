@@ -13,9 +13,22 @@
     <Compile Remove="Tests\**" />
   </ItemGroup>
 
+  <PropertyGroup>
+    <!-- EDCB 純正 DLL。*_epg.dat(TSパケット)の解析と ARIB 文字コードの復号を任せる。
+         リポジトリには入れず、EDCB のインストール先から出力へ配る。
+         場所が違う場合は -p:EpgDataCap3Dll=... で指定する -->
+    <EpgDataCap3Dll Condition="'$(EpgDataCap3Dll)' == ''">C:\ap\edcb\EpgDataCap3.dll</EpgDataCap3Dll>
+  </PropertyGroup>
+
+  <ItemGroup Condition="Exists('$(EpgDataCap3Dll)')">
+    <None Include="$(EpgDataCap3Dll)" Link="EpgDataCap3.dll"
+          CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
   <ItemGroup>
     <PackageReference Include="Microsoft.Data.Sqlite" Version="9.0.0" />
-    <PackageReference Include="MySqlConnector" Version="2.4.0" />
+    <!-- 参照先は Supabase セルフホスト (PostgreSQL)。MySQL は廃止 -->
+    <PackageReference Include="Npgsql" Version="9.0.2" />
   </ItemGroup>
 
   <ItemGroup>

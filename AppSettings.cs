@@ -19,8 +19,18 @@ public class AppSettings
     /// <summary>起点フォルダのリスト（ディレクトリタブでルートとして表示）。</summary>
     public List<string> EncodedFolders { get; set; } = new();
 
-    /// <summary>MySQL 接続文字列（例: Server=5600x;Database=edcbviewer;Uid=edcb;Pwd=pass）</summary>
+    /// <summary>
+    /// PostgreSQL(Supabase) 接続文字列。
+    /// 例: Host=5950X;Port=5432;Database=postgres;Username=postgres.xxx;Password=xxx;Timeout=10;
+    /// Host は Supabase が動いているマシン名。127.0.0.1 はそのマシン自身でしか通らない。
+    /// </summary>
     public string DbConnectionString { get; set; } = "";
+
+    /// <summary>
+    /// EDCB の EPG 蓄積ファイル(*_epg.dat)があるフォルダ。
+    /// 起動時と「更新」時にここを読んで DB へ取り込む。空なら取り込みを行わない。
+    /// </summary>
+    public string EpgDataFolder { get; set; } = "";
 
     private static readonly string SettingsPath =
         Path.Combine(

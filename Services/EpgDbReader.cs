@@ -1,4 +1,4 @@
-using MySqlConnector;
+using Npgsql;
 using EDCBViewer.Models;
 
 namespace EDCBViewer.Services;
@@ -22,7 +22,7 @@ public sealed class EpgDbReader
         if (!IsConfigured || string.IsNullOrEmpty(stationName)) return null;
         try
         {
-            using var conn = new MySqlConnection(_connStr);
+            using var conn = new NpgsqlConnection(_connStr);
             conn.Open();
             using var cmd = conn.CreateCommand();
             // 同局名で複数サービスが存在する場合に備え最大10件取得し、
@@ -33,8 +33,8 @@ public sealed class EpgDbReader
                 "WHERE s.service_name=@svc AND e.start_time >= @lo AND e.start_time <= @hi " +
                 "ORDER BY e.start_time ASC LIMIT 10";
             cmd.Parameters.AddWithValue("@svc", stationName);
-            cmd.Parameters.AddWithValue("@lo", startTime.AddMinutes(-2).ToString("yyyy-MM-dd HH:mm:ss"));
-            cmd.Parameters.AddWithValue("@hi", startTime.AddMinutes(2).ToString("yyyy-MM-dd HH:mm:ss"));
+            cmd.Parameters.AddWithValue("@lo", startTime.AddMinutes(-2));
+            cmd.Parameters.AddWithValue("@hi", startTime.AddMinutes(2));
             using var r = cmd.ExecuteReader();
 
             var rows = new List<(string Short, string Ext, string Name)>();
@@ -85,7 +85,7 @@ public sealed class EpgDbReader
         if (!IsConfigured) return null;
         try
         {
-            using var conn = new MySqlConnection(_connStr);
+            using var conn = new NpgsqlConnection(_connStr);
             conn.Open();
             using var cmd = conn.CreateCommand();
             cmd.CommandText =
@@ -117,7 +117,7 @@ public sealed class EpgDbReader
         if (terms.Length == 0) return [];
         try
         {
-            using var conn = new MySqlConnection(_connStr);
+            using var conn = new NpgsqlConnection(_connStr);
             conn.Open();
             var cols = new[] { "e.event_name", "e.short_text", "e.ext_text" };
             const string select =
@@ -129,7 +129,7 @@ public sealed class EpgDbReader
             // "古賀 葵" → 古賀[\s　]*葵  ← 隣接のみ許容。別人名が並ぶキャスト列の誤ヒットを防ぐ
             var escaped = terms.Select(EscapeRegex).ToArray();
             var phrasePattern = string.Join("[\\s　]*", escaped);
-            var phraseWhere = string.Join(" OR ", cols.Select(c => $"({c} REGEXP @pat)"));
+            var phraseWhere = string.Join(" OR ", cols.Select(c => $"({c} ~ @pat)"));
             using var c1 = conn.CreateCommand();
             c1.CommandText = $"{select}WHERE ({phraseWhere}) ORDER BY e.start_time DESC LIMIT @lim";
             c1.Parameters.AddWithValue("@pat", phrasePattern);
@@ -164,7 +164,7 @@ public sealed class EpgDbReader
         if (!IsConfigured || terms.Length == 0) return [];
         try
         {
-            using var conn = new MySqlConnection(_connStr);
+            using var conn = new NpgsqlConnection(_connStr);
             conn.Open();
             var cols = new[] { "e.event_name", "e.short_text", "e.ext_text" };
             var fieldAnd = cols.Select(c =>
@@ -197,7 +197,7 @@ public sealed class EpgDbReader
         if (!IsConfigured) return [];
         try
         {
-            using var conn = new MySqlConnection(_connStr);
+            using var conn = new NpgsqlConnection(_connStr);
             conn.Open();
             using var cmd = conn.CreateCommand();
             cmd.CommandText =
@@ -213,8 +213,8 @@ public sealed class EpgDbReader
                 "CASE WHEN e.onid>=30848 THEN 0 WHEN e.onid=4 THEN 1 " +
                 "WHEN e.onid IN (6,7) THEN 2 ELSE 3 END, " +
                 "s.remote_control_key, e.onid, e.tsid, e.sid, e.start_time";
-            cmd.Parameters.AddWithValue("@lo", rangeStart.ToString("yyyy-MM-dd HH:mm:ss"));
-            cmd.Parameters.AddWithValue("@hi", rangeEnd.ToString("yyyy-MM-dd HH:mm:ss"));
+            cmd.Parameters.AddWithValue("@lo", rangeStart);
+            cmd.Parameters.AddWithValue("@hi", rangeEnd);
             using var r = cmd.ExecuteReader();
             var list = new List<EpgEvent>();
             while (r.Read())
@@ -254,7 +254,7 @@ public sealed class EpgDbReader
         if (!IsConfigured) return false;
         try
         {
-            using var conn = new MySqlConnection(_connStr);
+            using var conn = new NpgsqlConnection(_connStr);
             conn.Open();
             using var cmd = conn.CreateCommand();
             cmd.CommandText = """
@@ -263,23 +263,23 @@ public sealed class EpgDbReader
                     tid INT NOT NULL,
                     cnt INT NULL,
                     chid INT NOT NULL,
-                    st_time DATETIME NOT NULL,
-                    INDEX idx_tid_cnt_st (tid, cnt, st_time),
-                    INDEX idx_chid_st (chid, st_time)
-                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+                    st_time TIMESTAMP NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_tid_cnt_st ON syobocal_airings (tid, cnt, st_time);
+                CREATE INDEX IF NOT EXISTS idx_chid_st ON syobocal_airings (chid, st_time);
                 CREATE TABLE IF NOT EXISTS syobocal_service_map (
                     service_name VARCHAR(255) NOT NULL,
                     chid INT NOT NULL,
                     PRIMARY KEY (service_name, chid)
-                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+                );
                 CREATE TABLE IF NOT EXISTS syobocal_titles (
                     tid INT NOT NULL PRIMARY KEY,
                     first_ym INT NOT NULL DEFAULT 0
-                ) ENGINE=InnoDB;
+                );
                 CREATE TABLE IF NOT EXISTS syobocal_meta (
                     k VARCHAR(64) NOT NULL PRIMARY KEY,
                     v VARCHAR(255) NOT NULL
-                ) ENGINE=InnoDB;
+                );
                 """;
             foreach (var stmt in cmd.CommandText.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
             {
@@ -298,7 +298,7 @@ public sealed class EpgDbReader
         if (!IsConfigured) return (0, 0, null);
         try
         {
-            using var conn = new MySqlConnection(_connStr);
+            using var conn = new NpgsqlConnection(_connStr);
             conn.Open();
             using var cmd = conn.CreateCommand();
             cmd.CommandText = "SELECT k, v FROM syobocal_meta WHERE k IN ('covered_from_ym','covered_to_ym','last_recent_refresh')";
@@ -318,13 +318,13 @@ public sealed class EpgDbReader
         if (!IsConfigured) return false;
         try
         {
-            using var conn = new MySqlConnection(_connStr);
+            using var conn = new NpgsqlConnection(_connStr);
             conn.Open();
             using var cmd = conn.CreateCommand();
             var sql = "INSERT INTO syobocal_meta (k,v) VALUES " +
                       "('covered_from_ym',@f), ('covered_to_ym',@t)" +
                       (lastRecentRefresh.HasValue ? ", ('last_recent_refresh',@l)" : "") +
-                      " ON DUPLICATE KEY UPDATE v=VALUES(v)";
+                      " ON CONFLICT (k) DO UPDATE SET v=EXCLUDED.v";
             cmd.CommandText = sql;
             cmd.Parameters.AddWithValue("@f", coveredFromYm.ToString());
             cmd.Parameters.AddWithValue("@t", coveredToYm.ToString());
@@ -345,13 +345,13 @@ public sealed class EpgDbReader
         if (!IsConfigured) return false;
         try
         {
-            using var conn = new MySqlConnection(_connStr);
+            using var conn = new NpgsqlConnection(_connStr);
             conn.Open();
             using (var del = conn.CreateCommand())
             {
                 del.CommandText = "DELETE FROM syobocal_airings WHERE st_time >= @lo AND st_time < @hi";
-                del.Parameters.AddWithValue("@lo", rangeLo.ToString("yyyy-MM-dd HH:mm:ss"));
-                del.Parameters.AddWithValue("@hi", rangeHi.ToString("yyyy-MM-dd HH:mm:ss"));
+                del.Parameters.AddWithValue("@lo", rangeLo);
+                del.Parameters.AddWithValue("@hi", rangeHi);
                 del.ExecuteNonQuery();
             }
             foreach (var chunk in rows.Chunk(500))
@@ -367,14 +367,15 @@ public sealed class EpgDbReader
                     if (cnt.HasValue) ins.Parameters.AddWithValue($"@c{i}", cnt.Value);
                     else ins.Parameters.AddWithValue($"@c{i}", DBNull.Value);
                     ins.Parameters.AddWithValue($"@h{i}", chid);
-                    ins.Parameters.AddWithValue($"@s{i}", st.ToString("yyyy-MM-dd HH:mm:ss"));
+                    ins.Parameters.AddWithValue($"@s{i}", st);
                     i++;
                 }
                 if (values.Count == 0) continue;
                 ins.CommandText =
                     "INSERT INTO syobocal_airings (pid,tid,cnt,chid,st_time) VALUES " +
                     string.Join(",", values) +
-                    " ON DUPLICATE KEY UPDATE tid=VALUES(tid), cnt=VALUES(cnt), chid=VALUES(chid), st_time=VALUES(st_time)";
+                    " ON CONFLICT (pid) DO UPDATE SET tid=EXCLUDED.tid, cnt=EXCLUDED.cnt," +
+                    " chid=EXCLUDED.chid, st_time=EXCLUDED.st_time";
                 ins.ExecuteNonQuery();
             }
             return true;
@@ -388,7 +389,7 @@ public sealed class EpgDbReader
         if (!IsConfigured) return false;
         try
         {
-            using var conn = new MySqlConnection(_connStr);
+            using var conn = new NpgsqlConnection(_connStr);
             conn.Open();
             foreach (var kv in map)
             {
@@ -409,8 +410,9 @@ public sealed class EpgDbReader
                     i++;
                 }
                 ins.Parameters.AddWithValue("@n", kv.Key);
-                ins.CommandText = "INSERT IGNORE INTO syobocal_service_map (service_name, chid) VALUES " +
-                                  string.Join(",", values);
+                ins.CommandText = "INSERT INTO syobocal_service_map (service_name, chid) VALUES " +
+                                  string.Join(",", values) +
+                                  " ON CONFLICT DO NOTHING";
                 ins.ExecuteNonQuery();
             }
             return true;
@@ -423,7 +425,7 @@ public sealed class EpgDbReader
         if (!IsConfigured || dict.Count == 0) return false;
         try
         {
-            using var conn = new MySqlConnection(_connStr);
+            using var conn = new NpgsqlConnection(_connStr);
             conn.Open();
             foreach (var chunk in dict.Chunk(500))
             {
@@ -439,7 +441,7 @@ public sealed class EpgDbReader
                 }
                 ins.CommandText = "INSERT INTO syobocal_titles (tid, first_ym) VALUES " +
                                   string.Join(",", values) +
-                                  " ON DUPLICATE KEY UPDATE first_ym=VALUES(first_ym)";
+                                  " ON CONFLICT (tid) DO UPDATE SET first_ym=EXCLUDED.first_ym";
                 ins.ExecuteNonQuery();
             }
             return true;
@@ -453,7 +455,7 @@ public sealed class EpgDbReader
         if (!IsConfigured || tids.Count == 0) return [];
         try
         {
-            using var conn = new MySqlConnection(_connStr);
+            using var conn = new NpgsqlConnection(_connStr);
             conn.Open();
             using var cmd = conn.CreateCommand();
             cmd.CommandText = "SELECT tid FROM syobocal_titles WHERE tid IN (" +
@@ -478,7 +480,7 @@ public sealed class EpgDbReader
         if (!IsConfigured) return null;
         try
         {
-            using var conn = new MySqlConnection(_connStr);
+            using var conn = new NpgsqlConnection(_connStr);
             conn.Open();
 
             // 手持ちの録画ファイル分だけに絞る。これが無いと events を局単位で全走査するため、
@@ -496,14 +498,14 @@ public sealed class EpgDbReader
                 {(useFileKeys ? """
                 JOIN tmp_file_keys fk ON fk.service_name = s.service_name
                 JOIN events e ON e.start_time >= fk.start_time
-                    AND e.start_time < fk.start_time + INTERVAL 1 MINUTE
+                    AND e.start_time < fk.start_time + INTERVAL '1 minute'
                     AND e.onid=s.onid AND e.tsid=s.tsid AND e.sid=s.sid
-                    AND e.start_time BETWEEN DATE_SUB(a.st_time, INTERVAL 5 MINUTE)
-                                          AND DATE_ADD(a.st_time, INTERVAL 5 MINUTE)
+                    AND e.start_time BETWEEN a.st_time - INTERVAL '5 minutes'
+                                          AND a.st_time + INTERVAL '5 minutes'
                 """ : """
                 JOIN events e ON e.onid=s.onid AND e.tsid=s.tsid AND e.sid=s.sid
-                    AND e.start_time BETWEEN DATE_SUB(a.st_time, INTERVAL 5 MINUTE)
-                                          AND DATE_ADD(a.st_time, INTERVAL 5 MINUTE)
+                    AND e.start_time BETWEEN a.st_time - INTERVAL '5 minutes'
+                                          AND a.st_time + INTERVAL '5 minutes'
                 """)}
                 LEFT JOIN syobocal_titles t ON t.tid = a.tid
                 WHERE a.cnt IS NOT NULL
@@ -514,8 +516,8 @@ public sealed class EpgDbReader
                       WHERE a2.tid = a.tid AND a2.cnt = a.cnt AND a2.st_time < a.st_time
                   )
                 """;
-            cmd.Parameters.AddWithValue("@lo", lo.ToString("yyyy-MM-dd HH:mm:ss"));
-            cmd.Parameters.AddWithValue("@hi", hi.ToString("yyyy-MM-dd HH:mm:ss"));
+            cmd.Parameters.AddWithValue("@lo", lo);
+            cmd.Parameters.AddWithValue("@hi", hi);
             cmd.Parameters.AddWithValue("@coveredFromYm", coveredFromYm);
             using var r = cmd.ExecuteReader();
             var set = new HashSet<(string, DateTime)>();
@@ -536,20 +538,20 @@ public sealed class EpgDbReader
     /// 揃えないと、結合時に文字コード変換が入って索引が効かなくなる。
     /// </summary>
     private static void CreateFileKeyTempTable(
-        MySqlConnection conn, IReadOnlyCollection<(string Station, DateTime Time)> fileKeys)
+        NpgsqlConnection conn, IReadOnlyCollection<(string Station, DateTime Time)> fileKeys)
     {
         using (var drop = conn.CreateCommand())
         {
             // 接続プール経由で同じ接続が再利用されると前回の一時テーブルが残るため必ず落とす
-            drop.CommandText = "DROP TEMPORARY TABLE IF EXISTS tmp_file_keys";
+            drop.CommandText = "DROP TABLE IF EXISTS tmp_file_keys";
             drop.ExecuteNonQuery();
         }
         using (var create = conn.CreateCommand())
         {
             create.CommandText = """
-                CREATE TEMPORARY TABLE tmp_file_keys (
-                    service_name VARCHAR(256) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
-                    start_time   DATETIME NOT NULL,
+                CREATE TEMP TABLE tmp_file_keys (
+                    service_name VARCHAR(256) NOT NULL,
+                    start_time   TIMESTAMP NOT NULL,
                     PRIMARY KEY (service_name, start_time)
                 )
                 """;
@@ -564,13 +566,14 @@ public sealed class EpgDbReader
             {
                 values.Add($"(@n{i},@s{i})");
                 ins.Parameters.AddWithValue($"@n{i}", station);
-                ins.Parameters.AddWithValue($"@s{i}", time.ToString("yyyy-MM-dd HH:mm:00"));
+                // 秒を切り捨てて分単位に揃える（PostgreSQL は timestamp 列に文字列を渡せない）
+                ins.Parameters.AddWithValue($"@s{i}", time.AddTicks(-(time.Ticks % TimeSpan.TicksPerMinute)));
                 i++;
             }
             if (values.Count == 0) continue;
             // 同一局・同一分のファイルが複数あっても落とさない
             ins.CommandText =
-                "INSERT IGNORE INTO tmp_file_keys (service_name, start_time) VALUES " +
+                "INSERT INTO tmp_file_keys (service_name, start_time) VALUES " +
                 string.Join(",", values);
             ins.ExecuteNonQuery();
         }
@@ -582,7 +585,7 @@ public sealed class EpgDbReader
         if (!IsConfigured) return [];
         try
         {
-            using var conn = new MySqlConnection(_connStr);
+            using var conn = new NpgsqlConnection(_connStr);
             conn.Open();
             using var cmd = conn.CreateCommand();
             cmd.CommandText = "SELECT DISTINCT service_name FROM services";
@@ -601,7 +604,7 @@ public sealed class EpgDbReader
         if (!IsConfigured) return null;
         try
         {
-            using var conn = new MySqlConnection(_connStr);
+            using var conn = new NpgsqlConnection(_connStr);
             conn.Open();
             using var cmd = conn.CreateCommand();
             cmd.CommandText = "SELECT MIN(start_time) FROM events";
@@ -624,7 +627,7 @@ public sealed class EpgDbReader
     private static string EscapeRegex(string s) =>
         System.Text.RegularExpressions.Regex.Escape(s).Replace("/", "\\/");
 
-    private static List<EpgEvent> ReadEvents(MySqlDataReader r)
+    private static List<EpgEvent> ReadEvents(NpgsqlDataReader r)
     {
         var list = new List<EpgEvent>();
         while (r.Read())

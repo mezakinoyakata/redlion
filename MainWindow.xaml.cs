@@ -53,7 +53,18 @@ public partial class MainWindow : Window
         _dirRoot        = "";
         _currentDirPath = "";
         InitSortHeaders();
-        Loaded += (_, _) => LoadMediaFiles();
+        Loaded += (_, _) => StartUp();
+    }
+
+    /// <summary>
+    /// 起動時。一覧を先に出してから EPG を取り込み、取り込んだ内容で一覧を作り直す。
+    /// 取り込みを待ってから表示すると、40 秒ほど何も出ない画面になるため。
+    /// </summary>
+    private async void StartUp()
+    {
+        LoadMediaFiles();
+        await ImportEpgAsync();
+        if (!string.IsNullOrWhiteSpace(_settings.EpgDataFolder)) LoadMediaFiles();
     }
 
     /// <summary>
@@ -579,7 +590,7 @@ public partial class MainWindow : Window
         gv.Columns[0].Width = Math.Max(100, DirList.ActualWidth - fixed_ - 22);
     }
 
-    private void DirRefresh_Click(object sender, RoutedEventArgs e) { _rootRetryCount = 3; LoadMediaFiles(); }
+    private void DirRefresh_Click(object sender, RoutedEventArgs e) => Refresh();
 
     private void FastestOnly_Changed(object sender, RoutedEventArgs e)
     {
@@ -822,7 +833,49 @@ public partial class MainWindow : Window
 
     // ─── メニュー / 設定 ─────────────────────────────────────────────────────
 
-    private void Refresh_Click(object sender, RoutedEventArgs e) { _rootRetryCount = 3; LoadMediaFiles(); }
+    private void Refresh_Click(object sender, RoutedEventArgs e) => Refresh();
+
+    private bool _refreshing;
+
+    /// <summary>
+    /// 更新（F5 / 更新ボタン）。
+    /// EPG を DB に取り込んでからファイル一覧を読み直す。
+    /// 取り込みに失敗しても続行する（今 DB にあるデータで一覧は出せる）。
+    /// </summary>
+    private async void Refresh()
+    {
+        _rootRetryCount = 3;
+        if (_refreshing) return;
+        _refreshing = true;
+        try
+        {
+            await ImportEpgAsync();
+            LoadMediaFiles();
+        }
+        finally
+        {
+            RefreshMenuItem.IsEnabled = true;
+            _refreshing = false;
+        }
+    }
+
+    /// <summary>
+    /// *_epg.dat を読んで DB に取り込む。フォルダ未設定なら何もしない。
+    /// DLL の読み込みも DB 書き込みも重いので、必ずワーカースレッドで動かす。
+    /// </summary>
+    private async Task ImportEpgAsync()
+    {
+        var dir = _settings.EpgDataFolder;
+        if (string.IsNullOrWhiteSpace(dir)) return;
+
+        RefreshMenuItem.IsEnabled = false;
+        StatusText.Text = "EPG取り込み中…";
+        var conn = _settings.DbConnectionString;
+        var r = await Task.Run(() => EpgImporter.Run(
+            conn, dir, msg => Dispatcher.Invoke(() => StatusText.Text = msg)));
+        StatusText.Text = r.Message;
+        RefreshMenuItem.IsEnabled = true;
+    }
 
     private EpgGuideWindow? _guideWindow;
 
