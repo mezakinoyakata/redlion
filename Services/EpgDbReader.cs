@@ -604,6 +604,31 @@ public sealed class EpgDbReader
             {
                 cmd.CommandTimeout = 300;
                 cmd.CommandText = $"""
+                    -- しょぼカルの1チャンネル(chid)に対して、EDCB 側は複数サービスが
+                    -- 対応しうる。そのまま結合すると1つの放送が全サービスに複製され、
+                    -- 過去の番組表だけ同じ番組が何列も並ぶ。chid ごとに1つへ絞る。
+                    --   ・同じ局名の枝番(ＢＳ日テレ 141/142/143 等)
+                    --     → 実 EPG で番組名が入るのは本編だけ(142/143 は枠だけで名前が空)
+                    --       なので、番組名が入っている行が最も多いものを本編とみなす。
+                    --       sid の小ささでは選ばない(フジテレビは 1056 が本編だが 1440 も
+                    --       実際に使われており、単純な最小値では取り違える)
+                    --   ・4K 局(ＢＳ日テレ　４Ｋ 等)は前方一致で同じ chid に付いてしまう
+                    --     → しょぼカルは 4K を区別して持たないので候補から外す。
+                    --       onid=11 が 4K 専用ネットワーク(全8サービスが 4K、他の onid には無い)
+                    WITH main_service AS (
+                        SELECT DISTINCT ON (sm.chid)
+                               sm.chid, s.onid, s.tsid, s.sid
+                        FROM syobocal_service_map sm
+                        JOIN services s ON s.service_name = sm.service_name
+                        LEFT JOIN events e
+                               ON e.onid = s.onid AND e.tsid = s.tsid AND e.sid = s.sid
+                              AND e.event_id < {SyntheticEventIdBase}
+                              AND e.event_name <> ''
+                        WHERE s.service_type = 1 AND s.partial_reception = 0
+                          AND s.onid <> 11
+                        GROUP BY sm.chid, s.onid, s.tsid, s.sid
+                        ORDER BY sm.chid, count(e.event_id) DESC, s.onid, s.sid
+                    )
                     INSERT INTO events (
                         onid, tsid, sid, event_id, start_time, duration_sec,
                         event_name, short_text, ext_text,
@@ -620,8 +645,7 @@ public sealed class EpgDbReader
                            NULL, NULL, NULL, '',
                            0, now(), 0, 0
                     FROM syobocal_airings a
-                    JOIN syobocal_service_map sm ON sm.chid = a.chid
-                    JOIN services s ON s.service_name = sm.service_name
+                    JOIN main_service s ON s.chid = a.chid
                     LEFT JOIN syobocal_titles t ON t.tid = a.tid
                     WHERE a.st_time >= @lo AND a.st_time < @hi
                     ON CONFLICT (onid, tsid, sid, event_id) DO UPDATE SET
