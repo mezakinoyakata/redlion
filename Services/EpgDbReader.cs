@@ -194,7 +194,8 @@ public sealed class EpgDbReader
     /// </summary>
     public List<EpgEvent> GetGuideEvents(DateTime rangeStart, DateTime rangeEnd)
     {
-        if (!IsConfigured) return [];
+        LastGuideError = null;
+        if (!IsConfigured) { LastGuideError = "DB が未設定です"; return []; }
         try
         {
             using var conn = new NpgsqlConnection(_connStr);
@@ -233,8 +234,15 @@ public sealed class EpgDbReader
                 });
             return list;
         }
-        catch { return []; }
+        catch (Exception ex) { LastGuideError = ex.Message; return []; }
     }
+
+    /// <summary>番組表取得の直近の失敗理由（成功時は null）。</summary>
+    /// <remarks>
+    /// 失敗しても空リストを返すため、そのままでは「番組が無い日」と区別が付かない。
+    /// DB が落ちている・型が合わない等の理由を画面に出せるようにここに残す。
+    /// </remarks>
+    public string? LastGuideError { get; private set; }
 
     // ─── しょぼカル連携（最速放送判定）─────────────────────────────────────
     // events テーブルは一切変更しない（列追加・書き込みなし）。

@@ -113,9 +113,11 @@ public partial class EpgGuideWindow : Window
             var events = await Task.Run(() => _reader.GetGuideEvents(lo, hi));
 
             BuildGrid(events);
-            StatusText.Text = events.Count == 0
-                ? "この日の番組データはありません"
-                : $"{events.Count} 番組";
+            // 取得失敗も空リストで返るので、理由があればそちらを出す
+            // （「番組が無い日」と「DB に繋がらない」を区別できるようにする）
+            StatusText.Text = _reader.LastGuideError is { } err ? "取得失敗: " + err
+                            : events.Count == 0 ? "この日の番組データはありません"
+                            : $"{events.Count} 番組";
         }
         finally { _loading = false; }
     }

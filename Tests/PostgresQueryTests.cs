@@ -40,6 +40,24 @@ public class PostgresQueryTests
         Assert.Null(reader.GetEventInfoText(0, 0, 0, 0));
     }
 
+    /// <summary>
+    /// 番組表。smallint 列(free_ca_flag / nibble_l1)を GetInt32 で読んでいるので、
+    /// Npgsql の型チェックに引っかからないかをここで確かめる。
+    /// </summary>
+    [Fact]
+    public void 番組表が取得できる()
+    {
+        if (!DbAvailable()) return;
+
+        var reader = new EpgDbReader(ConnStr);
+        var day  = DateTime.Today.AddHours(4);      // 実画面と同じ 04:00 起点の24時間
+        var list = reader.GetGuideEvents(day, day.AddHours(24));
+
+        Assert.Null(reader.LastGuideError);   // 型の不一致などはここに出る
+        Assert.NotEmpty(list);                // 取り込み済みなら今日の番組が空になることはない
+        Assert.Contains(list, e => e.EventName.Length > 0 && e.ServiceName.Length > 0);
+    }
+
     [Fact]
     public void サービス名一覧が取得できる()
     {
