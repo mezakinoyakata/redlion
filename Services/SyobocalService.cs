@@ -38,6 +38,9 @@ public sealed class SyobocalService
         return c;
     }
 
+    // 定義行: ":原作:板垣恵介" → 項目=原作 / 値=板垣恵介
+    private static readonly System.Text.RegularExpressions.Regex DefLine =
+        new(@"^:([^:]+):(.*)$", System.Text.RegularExpressions.RegexOptions.Compiled);
     // SubTitles の1行: *01*サブタイトル
     private static readonly System.Text.RegularExpressions.Regex SubTitleLine =
         new(@"^\*(\d+)\*(.*)$", System.Text.RegularExpressions.RegexOptions.Compiled);
@@ -425,6 +428,7 @@ public sealed class SyobocalService
     internal static string CleanWiki(string s)
     {
         if (string.IsNullOrWhiteSpace(s)) return "";
+        // 応答には \r が実体参照でなく生で入ってくることがあるので、先に改行を揃える
         s = s.Replace("\r\n", "\n").Replace('\r', '\n');
         var sb = new StringBuilder();
         foreach (var raw in s.Split('\n'))
@@ -433,6 +437,12 @@ public sealed class SyobocalService
             if (line.Length == 0) { sb.Append('\n'); continue; }
             // 見出し (*, **, ***) は行頭の * を落とす
             line = line.TrimStart('*').Trim();
+            // 定義行 ":項目:値" は「項目: 値」にする（スタッフ・キャストがこの形式）
+            var def = DefLine.Match(line);
+            if (def.Success)
+                line = def.Groups[1].Value.Trim() + ": " + def.Groups[2].Value.Trim();
+            // 箇条書き "-項目" は中黒にする
+            else if (line.StartsWith('-')) line = "・" + line[1..].Trim();
             // [[リンク]] / [[表示|リンク先]] は表示側だけ残す
             line = WikiLink.Replace(line, mm =>
             {

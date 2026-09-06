@@ -132,6 +132,21 @@ public class SyobocalTests
     }
 
     [Fact]
+    public void CleanWiki_FormatsStaffLines()
+    {
+        // 実際の応答（刃牙道）と同じ形。\r が生で混じり、スタッフは ":項目:値" 形式
+        var s = SyobocalService.CleanWiki(
+            "*リンク\r\n-公式 https://baki-anime.jp/\r\n\r\n*スタッフ\r\n" +
+            ":原作:板垣恵介\r\n:監督:平野俊貴\r\n");
+
+        Assert.DoesNotContain("\r", s);          // 改行が揃っている
+        Assert.Contains("原作: 板垣恵介", s);    // ":項目:値" → "項目: 値"
+        Assert.Contains("監督: 平野俊貴", s);
+        Assert.Contains("・公式", s);            // "-項目" → 中黒
+        Assert.Contains("スタッフ", s);
+    }
+
+    [Fact]
     public void CleanWiki_EmptyStaysEmpty()
     {
         Assert.Equal("", SyobocalService.CleanWiki(""));
