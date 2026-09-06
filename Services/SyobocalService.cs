@@ -66,7 +66,10 @@ public sealed class SyobocalService
         Action<string>? progress = null)
     {
         if (fileKeys.Count == 0) return false;
-        var stations = fileKeys.Select(k => k.Station).Distinct().ToList();
+        // 対応表は DB の全サービスに対して作る。手持ちファイルの局だけにすると、
+        // 録画していない局の番組が番組表に一切出ない（2026-09-06 に判明）。
+        var stations = reader.GetServiceNames();
+        if (stations.Count == 0) stations = fileKeys.Select(k => k.Station).Distinct().ToList();
         // 取得範囲は手持ちファイルの期間に合わせる。
         // 以前は events の蓄積開始(2026-06)でクランプしていたが、それ以前の録画も
         // しょぼカルとファイルだけで最速判定できるようにしたため、遡って取得する

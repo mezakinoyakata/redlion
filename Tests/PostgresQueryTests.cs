@@ -98,6 +98,29 @@ public class PostgresQueryTests
         Assert.Equal(0, n);   // この期間にしょぼカルのデータは無い
     }
 
+    /// <summary>
+    /// EPG が無い期間（しょぼカル由来の合成行）を番組表として読めるか。
+    /// DB には行があるのに画面に出ない、という切り分け用。
+    /// </summary>
+    [Fact]
+    public void EPGが無い期間の番組表を取得できる()
+    {
+        if (!DbAvailable()) return;
+
+        var reader = new EpgDbReader(ConnStr);
+        var day  = new DateTime(2020, 1, 1, 4, 0, 0);   // 実画面と同じ 04:00 起点
+        var list = reader.GetGuideEvents(day, day.AddHours(24));
+
+        Assert.Null(reader.LastGuideError);
+        // その期間を未取得の環境では検証しない
+        if (reader.GetEventsMinStartTime() is not { } min || min > day) return;
+
+        Assert.NotEmpty(list);
+        // 番組名がマスタから組み立てられている（event_name は空のはず）
+        Assert.Contains(list, e => e.EventName.Length > 0);
+        Assert.All(list, e => Assert.False(string.IsNullOrEmpty(e.ServiceName)));
+    }
+
     [Fact]
     public void サービス名一覧が取得できる()
     {

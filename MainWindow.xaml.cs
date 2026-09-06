@@ -127,9 +127,10 @@ public partial class MainWindow : Window
             {
                 if (reader.EnsureEpisodesFromAirings() < 0) return false;
                 if (reader.LinkEventsToEpisodes(oldest, DateTime.Now) < 0) return false;
-                if (eventsMin != null && oldest < eventsMin.Value)
-                    return reader.BuildSyntheticEvents(oldest, eventsMin.Value) >= 0;
-                return true;
+                // 期間は events の有無で切らない。実 EPG が中途半端にしか無い日
+                // （2026-05 は1日55件）も埋めたいので、日とサービスの単位で
+                // BuildSyntheticEvents 側が判定する。
+                return reader.BuildSyntheticEvents(oldest, DateTime.Now) >= 0;
             });
             StatusText.Text = linkOk ? "" : "番組情報の整備に失敗: " + reader.LastSyobocalError;
 

@@ -63,6 +63,41 @@ public class NormalizedGuideTests
             """));
     }
 
+    /// <summary>
+    /// 放送レコードに出てくる作品が、全て作品マスタに登録されているか。
+    ///
+    /// 以前は syobocal_titles で「取得済み」を判定していたため、そちらにだけ存在する
+    /// 作品（MySQL 時代からの 617 件）が programs に一度も入らず、
+    /// 2026-05 の 233 作品が番組表から丸ごと落ちていた。
+    /// </summary>
+    [Fact]
+    public void 放送レコードの作品が全てマスタにある()
+    {
+        if (!Available()) return;
+
+        var missing = Scalar("""
+            SELECT count(DISTINCT a.tid)
+            FROM syobocal_airings a
+            LEFT JOIN programs p ON p.src='syobocal' AND p.src_id = a.tid
+            WHERE p.program_id IS NULL
+            """);
+        Assert.Equal(0, missing);
+    }
+
+    /// <summary>
+    /// 取得対象の判定が programs を見ているか。
+    /// syobocal_titles にだけある作品は「未取得」として返らなければならない。
+    /// </summary>
+    [Fact]
+    public void 作品マスタに無いものが取得対象になる()
+    {
+        if (!Available()) return;
+
+        var reader = new EpgDbReader(TestConnStr);
+        // programs に存在しない TID は必ず取得対象
+        Assert.Contains(999_999_99, reader.GetMissingTitleIds([999_999_99]));
+    }
+
     [Fact]
     public void 実EPGに話数を紐付けられる()
     {

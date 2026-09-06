@@ -566,7 +566,13 @@ public sealed class EpgDbReader
             using var conn = new NpgsqlConnection(_connStr);
             conn.Open();
             using var cmd = conn.CreateCommand();
-            cmd.CommandText = "SELECT tid FROM syobocal_titles WHERE tid IN (" +
+            // 判定先は作品マスタ(programs)。syobocal_titles で判定すると、
+            // そちらにだけ存在する作品（MySQL 時代からの分）が「取得済み」とみなされ、
+            // programs に一度も入らないまま残る。番組名が引けず番組表から丸ごと落ちる
+            // （2026-05 の 233 作品がこれで抜けていた）。
+            // 名前が空のものも取り直す。
+            cmd.CommandText = "SELECT src_id FROM programs " +
+                              "WHERE src='syobocal' AND title <> '' AND src_id IN (" +
                               string.Join(",", tids) + ")";
             using var r = cmd.ExecuteReader();
             var known = new HashSet<int>();
@@ -824,6 +830,21 @@ public sealed class EpgDbReader
                     JOIN program_episodes ep ON ep.program_id = p.program_id
                                             AND COALESCE(ep.cnt, -1) = COALESCE(a.cnt, -1)
                     WHERE a.st_time >= @lo AND a.st_time < @hi
+                      -- その放送の時間帯に実 EPG があれば入れない（同じ番組の二重表示になる）。
+                      -- 日やサービス単位で切ると粗すぎる。実 EPG が中途半端にしか
+                      -- 溜まっていない期間（2026-05 は1日27件が11局にばらけている）は、
+                      -- 局あたり2〜3件しか無くてもその日その局が丸ごと除外されてしまう。
+                      AND NOT EXISTS (
+                          SELECT 1 FROM events e2
+                          WHERE e2.onid = s.onid AND e2.tsid = s.tsid AND e2.sid = s.sid
+                            AND e2.event_id < {SyntheticEventIdBase}
+                            -- 索引 (onid,tsid,sid,start_time) を使うため範囲を絞る
+                            AND e2.start_time >= a.st_time - INTERVAL '6 hours'
+                            AND e2.start_time <  COALESCE(a.ed_time, a.st_time + INTERVAL '30 minutes')
+                            -- 実 EPG の番組が放送の時間帯に重なっているか
+                            AND e2.start_time + (COALESCE(e2.duration_sec, 1800) * INTERVAL '1 second')
+                                > a.st_time
+                      )
                     ON CONFLICT (onid, tsid, sid, event_id) DO UPDATE SET
                         start_time   = EXCLUDED.start_time,
                         duration_sec = EXCLUDED.duration_sec,
