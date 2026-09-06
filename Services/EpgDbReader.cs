@@ -1018,7 +1018,12 @@ public sealed class EpgDbReader
             using var conn = new NpgsqlConnection(_connStr);
             conn.Open();
             using var cmd = conn.CreateCommand();
-            cmd.CommandText = "SELECT MIN(start_time) FROM events";
+            // 合成行（しょぼカルから作った過去分）は数えない。
+            // 数えると「EPG の蓄積開始」が 2014 年になり、全ファイルが EPG のある期間と
+            // 判定されて最速判定が 12 年分・3万件を一度に処理し、時間切れでマークが
+            // 一つも付かなくなる（2026-09-07 のデグレ）。
+            cmd.CommandText =
+                $"SELECT MIN(start_time) FROM events WHERE event_id < {SyntheticEventIdBase}";
             var v = cmd.ExecuteScalar();
             return v is DateTime dt ? dt
                  : v is string s && DateTime.TryParse(s, out var p) ? p : null;

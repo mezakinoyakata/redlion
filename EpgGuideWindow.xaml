@@ -100,7 +100,7 @@
                 <ScrollViewer x:Name="TimeScroll" Grid.Row="1" Grid.Column="0"
                               HorizontalScrollBarVisibility="Disabled"
                               VerticalScrollBarVisibility="Hidden">
-                    <Canvas x:Name="TimeCanvas" Width="44"/>
+                    <Canvas x:Name="TimeCanvas" Width="44" VerticalAlignment="Top"/>
                 </ScrollViewer>
 
                 <!-- メイン番組グリッド -->
@@ -108,7 +108,11 @@
                               HorizontalScrollBarVisibility="Auto"
                               VerticalScrollBarVisibility="Auto"
                               ScrollChanged="MainScroll_ScrollChanged">
-                    <Canvas x:Name="GuideCanvas" Background="#FF252525"/>
+                    <!-- 幅・高さをコード側で設定するため、左上詰めに固定する。
+                         指定しないと、列数が少なく表示領域より狭い日に中央へ寄り、
+                         左詰めのヘッダーと横位置がずれる -->
+                    <Canvas x:Name="GuideCanvas" Background="#FF252525"
+                            HorizontalAlignment="Left" VerticalAlignment="Top"/>
                 </ScrollViewer>
             </Grid>
 
