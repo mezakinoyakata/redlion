@@ -38,6 +38,9 @@ public sealed class SyobocalService
         return c;
     }
 
+    // SubTitles の1行: *01*サブタイトル
+    private static readonly System.Text.RegularExpressions.Regex SubTitleLine =
+        new(@"^\*(\d+)\*(.*)$", System.Text.RegularExpressions.RegexOptions.Compiled);
     private static readonly System.Text.RegularExpressions.Regex WikiLink =
         new(@"\[\[([^\]]+)\]\]", System.Text.RegularExpressions.RegexOptions.Compiled);
     private static readonly System.Text.RegularExpressions.Regex BlankRuns =
@@ -153,14 +156,15 @@ public sealed class SyobocalService
             {
                 progress?.Invoke("しょぼカル: 作品情報取得中...");
                 Log($"TitleLookup: {missing.Count} tids");
-                var result = new Dictionary<int, (int FirstYm, string Title, string Comment)>();
+                var result = new Dictionary<int, TitleRow>();
                 foreach (var chunk in missing.Chunk(50))
                 {
                     foreach (var kv in ParseTitleFirstYm(
                         await GetAsync("Command=TitleLookup&TID=" + string.Join(",", chunk))))
                         result[kv.Key] = kv.Value;
+                    // 応答に含まれなかった分も再問合せしないよう記録
                     foreach (var tid in chunk)
-                        result.TryAdd(tid, (0, "", ""));  // 応答に含まれなかった分も再問合せしないよう記録
+                        result.TryAdd(tid, new TitleRow(0, "", "", []));
                 }
                 reader.UpsertTitleFirstYm(result);
                 changed = true;
@@ -374,18 +378,42 @@ public sealed class SyobocalService
         return (rows, deleted);
     }
 
-    internal static Dictionary<int, (int FirstYm, string Title, string Comment)> ParseTitleFirstYm(string xml)
+    /// <summary>作品マスタ1件分。話数タイトルは TitleLookup がまとめて返す。</summary>
+    internal sealed record TitleRow(int FirstYm, string Title, string Comment,
+                                    Dictionary<int, string> SubTitles);
+
+    internal static Dictionary<int, TitleRow> ParseTitleFirstYm(string xml)
     {
-        var result = new Dictionary<int, (int, string, string)>();
+        var result = new Dictionary<int, TitleRow>();
         foreach (var x in XDocument.Parse(SanitizeXml(xml)).Descendants("TitleItem"))
         {
             var tid = (int?)x.Element("TID") ?? 0;
             if (tid == 0) continue;
             var y = int.TryParse((string?)x.Element("FirstYear"),  out var yy) ? yy : 0;
             var m = int.TryParse((string?)x.Element("FirstMonth"), out var mm) ? mm : 0;
-            result[tid] = (y > 0 && m > 0 ? y * 100 + m : 0,
-                           ((string?)x.Element("Title") ?? "").Trim(),
-                           CleanWiki((string?)x.Element("Comment") ?? ""));
+            result[tid] = new TitleRow(
+                y > 0 && m > 0 ? y * 100 + m : 0,
+                ((string?)x.Element("Title") ?? "").Trim(),
+                CleanWiki((string?)x.Element("Comment") ?? ""),
+                ParseSubTitles((string?)x.Element("SubTitles") ?? ""));
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// SubTitles は 1行1話で「*01*サブタイトル」の形式。話数 → タイトル にほぐす。
+    /// 放送レコードを1件ずつ見なくても話数マスタが作れる。
+    /// </summary>
+    internal static Dictionary<int, string> ParseSubTitles(string s)
+    {
+        var result = new Dictionary<int, string>();
+        if (string.IsNullOrWhiteSpace(s)) return result;
+        foreach (var raw in s.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n'))
+        {
+            var m = SubTitleLine.Match(raw.Trim());
+            if (!m.Success) continue;
+            if (!int.TryParse(m.Groups[1].Value, out var cnt)) continue;
+            result[cnt] = m.Groups[2].Value.Trim();   // 同じ話数が二度出たら後勝ち
         }
         return result;
     }

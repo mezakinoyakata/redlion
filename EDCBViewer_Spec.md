@@ -380,10 +380,110 @@ WHERE a.cnt IS NOT NULL
 | `program_guide` | `SELECT e.*, s.service_name, s.network_name, s.remote_control_key FROM events e JOIN services s USING (onid, tsid, sid)` |
 | `upcoming` | `SELECT * FROM program_guide WHERE start_time > NOW()` |
 
-### 書き込み側（EpgTimerSrv）
+### 書き込み側
 
-EpgTimerSrv（C++）が EPG ロード完了後に MySQL へ書き出す。  
-詳細は `C:\work\CC\EDCB\EpgSqliteExporter_Spec.md` を参照。
+EDCBViewer 自身が EPG を取り込む。起動時と「更新」時に、EDCB の EPG 蓄積ファイル
+（`*_epg.dat`）を `EpgDataCap3.dll` で解析して PostgreSQL へ書き出す（`Services/EpgImporter.cs`）。
+EpgTimerSrv は使わない。
+
+---
+
+## 番組マスタの正規化（2026-09 設計）
+
+### 背景
+
+EDCB の EPG（events）は 2026-06 以降しか無く、それ以前の録画は番組表にも最速判定にも
+出てこない。しょぼいカレンダーは 2002 年から放送データを持っているので、そこから
+過去分を補う。ただし**作品名や解説を events に複製すると、同じ文章が何千行にも入る**。
+そこでマスタとトランザクションを分ける。
+
+### テーブル構成
+
+```
+programs（番組マスタ＝作品）
+    program_id   BIGSERIAL   PK      意味なしの連番
+    src          VARCHAR(16)         出所（'syobocal'）
+    src_id       INT                 出所側のID（しょぼカルの TID）
+    title        VARCHAR(512)        作品名
+    comment      TEXT                解説（スタッフ・キャストを含むことが多い）
+    first_ym     INT                 放送開始年月 yyyyMM（不明は0）
+    UNIQUE (src, src_id)
+
+program_episodes（話数マスタ）
+    episode_id   BIGSERIAL   PK      意味なしの連番
+    program_id   BIGINT      FK → programs
+    cnt          INT NULL            話数（映画・単発は NULL で1行）
+    sub_title    VARCHAR(512)        話数タイトル
+    UNIQUE (program_id, cnt)
+
+events（トランザクション＝放送実績）
+    onid, tsid, sid, event_id        既存 PK
+    start_time, duration_sec         いつ・何分
+    episode_id   BIGINT NULL FK      ★追加。どの話の放送か
+    event_name, short_text, ext_text 実 EPG が受信した自前の文字列
+```
+
+**キーは連番にする。** しょぼカルの TID は `src_id` に出所として持ち `UNIQUE (src, src_id)`
+で守る。将来しょぼカル以外の出所を足しても構造が変わらない。
+
+**番組名をキーにしない。** EDCB 側は `［新］＜アニおび＞波よ聞いてくれ＃１「お前を許さない」`、
+しょぼカル側は `波よ聞いてくれ` のように表記が違うため、文字列一致では外れる。
+既存の最速判定がタイトルを避けて (チャンネル, 開始時刻) で照合しているのと同じ理由。
+
+### events が持つもの・持たないもの
+
+events はトラン情報だけを持つ。作品名と解説は持たず `episode_id` から辿る。
+
+```sql
+SELECT p.title, ep.cnt, ep.sub_title, p.comment
+FROM events e
+JOIN program_episodes ep ON ep.episode_id = e.episode_id
+JOIN programs p          ON p.program_id  = ep.program_id
+```
+
+実 EPG 行の `event_name` などは EDCB が受信した情報（`[字]`、`▽` 以降の煽り文など
+しょぼカルには無いもの）なので残す。しょぼカル由来の過去の行は空にして、
+表示時にマスタから組み立てる。
+
+### 最速判定
+
+`episode_id` を持つことで、突き合わせが不要になる。
+
+```sql
+SELECT DISTINCT ON (episode_id) episode_id, onid, tsid, sid, start_time
+FROM events WHERE episode_id IS NOT NULL
+ORDER BY episode_id, start_time
+```
+
+チャンネル対応表も ±5分の突き合わせも、`episode_id` を埋める時に1回使うだけになる。
+
+### 合成行の識別
+
+過去期間の events 行は `event_id = しょぼカルの PID + 1000000` で作る。
+実 EPG の event_id は 16bit（最大 65535）なので衝突しない。
+`DELETE FROM events WHERE event_id >= 1000000` で全て消せる。
+
+しょぼカルの1チャンネルに EDCB 側の複数サービスが対応するため、chid ごとに1つへ絞る。
+
+- 同じ局名の枝番（ＢＳ日テレ 141/142/143 等）: 実 EPG で番組名が入っている行が
+  最も多いものを本編とみなす。sid の最小値では選ばない
+  （フジテレビは 1056 が本編だが 1440 も実際に使われており取り違える）
+- 4K 局（ＢＳ日テレ　４Ｋ 等）: しょぼカルは 4K を区別しないので候補から外す。
+  `onid = 11` が 4K 専用ネットワーク（8サービス全てが 4K、他の onid には無い）
+
+### しょぼカル API の 500 件制限
+
+キーワードなしの期間検索は 500 件で打ち切られる。この設計では踏まない。
+`programs` は放送データ（ProgLookup）に出てきた TID だけを対象に
+`TitleLookup&TID=` で50件ずつ引くため、期間検索を使わない。
+
+期間検索を使うのは ProgLookup（放送データ）側で、こちらは2か月チャンクに割り、
+1リクエスト 4,900 件を超えたら期間を半分にして再取得する。
+
+### 検証の進め方
+
+**本番（`postgres`）で未検証のまま実行しない。** 同じ PostgreSQL 内に
+`edcbviewer_test` を作り、本番からスキーマとデータを写して確認してから本番に入れる。
 
 ---
 

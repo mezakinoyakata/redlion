@@ -76,6 +76,36 @@ public class SyobocalTests
         Assert.Equal("猫と竜", d[7887].Title);
     }
 
+    // ─── 話数タイトル（TitleLookup の SubTitles）─────────────────────────────
+
+    [Fact]
+    public void ParseSubTitles_ReadsEpisodeTitles()
+    {
+        // 実際の応答と同じ形式（*01*サブタイトル が1行1話）
+        var d = SyobocalService.ParseSubTitles(
+            "*01*猫と竜\n*02*母猫と少女\n*08*城下町の生活／黒猫と冒険王子\n");
+
+        Assert.Equal(3, d.Count);
+        Assert.Equal("猫と竜", d[1]);
+        Assert.Equal("母猫と少女", d[2]);
+        Assert.Equal("城下町の生活／黒猫と冒険王子", d[8]);   // スラッシュを含むタイトル
+    }
+
+    [Fact]
+    public void ParseSubTitles_IgnoresJunkLines()
+    {
+        var d = SyobocalService.ParseSubTitles("見出し\n*03*第三話\n\n*あ*壊れた行\n");
+        Assert.Single(d);
+        Assert.Equal("第三話", d[3]);
+    }
+
+    [Fact]
+    public void ParseSubTitles_EmptyStaysEmpty()
+    {
+        Assert.Empty(SyobocalService.ParseSubTitles(""));
+        Assert.Empty(SyobocalService.ParseSubTitles("   \n "));
+    }
+
     [Fact]
     public void ParseProgs_ReadsEndTimeAndSubTitle()
     {

@@ -288,6 +288,25 @@ public sealed class EpgDbReader
                     k VARCHAR(64) NOT NULL PRIMARY KEY,
                     v VARCHAR(255) NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS programs (
+                    program_id BIGSERIAL PRIMARY KEY,
+                    src        VARCHAR(16)  NOT NULL,
+                    src_id     INT          NOT NULL,
+                    title      VARCHAR(512) NOT NULL DEFAULT '',
+                    comment    TEXT         NOT NULL DEFAULT '',
+                    first_ym   INT          NOT NULL DEFAULT 0,
+                    UNIQUE (src, src_id)
+                );
+                CREATE TABLE IF NOT EXISTS program_episodes (
+                    episode_id BIGSERIAL PRIMARY KEY,
+                    program_id BIGINT    NOT NULL REFERENCES programs(program_id) ON DELETE CASCADE,
+                    cnt        INT       NULL,
+                    sub_title  VARCHAR(512) NOT NULL DEFAULT ''
+                );
+                CREATE UNIQUE INDEX IF NOT EXISTS ux_episode
+                    ON program_episodes (program_id, COALESCE(cnt, -1));
+                ALTER TABLE events ADD COLUMN IF NOT EXISTS episode_id BIGINT NULL;
+                CREATE INDEX IF NOT EXISTS idx_events_episode ON events (episode_id);
                 ALTER TABLE syobocal_airings ADD COLUMN IF NOT EXISTS ed_time TIMESTAMP NULL;
                 ALTER TABLE syobocal_airings ADD COLUMN IF NOT EXISTS sub_title VARCHAR(512) NOT NULL DEFAULT '';
                 ALTER TABLE syobocal_titles  ADD COLUMN IF NOT EXISTS title VARCHAR(512) NOT NULL DEFAULT '';
@@ -437,7 +456,13 @@ public sealed class EpgDbReader
         catch (Exception ex) { LastSyobocalError = ex.Message; return false; }
     }
 
-    public bool UpsertTitleFirstYm(Dictionary<int, (int FirstYm, string Title, string Comment)> dict)
+    /// <summary>
+    /// 作品マスタ(programs)と話数マスタ(program_episodes)を更新する。
+    /// 話数タイトルは TitleLookup の SubTitles にまとまって入っているので、
+    /// 放送レコードを1件ずつ見なくてもここで揃う。
+    /// syobocal_titles は最速判定のカバー範囲ガードで使うので併せて更新する。
+    /// </summary>
+    internal bool UpsertTitleFirstYm(Dictionary<int, SyobocalService.TitleRow> dict)
     {
         if (!IsConfigured || dict.Count == 0) return false;
         try
@@ -458,17 +483,61 @@ public sealed class EpgDbReader
                     ins.Parameters.AddWithValue($"@c{i}", kv.Value.Comment ?? "");
                     i++;
                 }
+                var v = string.Join(",", values);
                 // 作品名・解説は後から取れることがあるので、空で上書きしない
-                ins.CommandText = "INSERT INTO syobocal_titles (tid, first_ym, title, comment) VALUES " +
-                                  string.Join(",", values) +
-                                  " ON CONFLICT (tid) DO UPDATE SET first_ym=EXCLUDED.first_ym," +
-                                  " title=CASE WHEN EXCLUDED.title='' THEN syobocal_titles.title ELSE EXCLUDED.title END," +
-                                  " comment=CASE WHEN EXCLUDED.comment='' THEN syobocal_titles.comment ELSE EXCLUDED.comment END";
+                ins.CommandText =
+                    "INSERT INTO syobocal_titles (tid, first_ym, title, comment) VALUES " + v +
+                    " ON CONFLICT (tid) DO UPDATE SET first_ym=EXCLUDED.first_ym," +
+                    " title=CASE WHEN EXCLUDED.title='' THEN syobocal_titles.title ELSE EXCLUDED.title END," +
+                    " comment=CASE WHEN EXCLUDED.comment='' THEN syobocal_titles.comment ELSE EXCLUDED.comment END;" +
+                    "INSERT INTO programs (src, src_id, title, comment, first_ym) " +
+                    "SELECT 'syobocal', x.tid, x.title, x.comment, x.first_ym FROM (VALUES " + v +
+                    ") AS x(tid, first_ym, title, comment)" +
+                    " ON CONFLICT (src, src_id) DO UPDATE SET first_ym=EXCLUDED.first_ym," +
+                    " title=CASE WHEN EXCLUDED.title='' THEN programs.title ELSE EXCLUDED.title END," +
+                    " comment=CASE WHEN EXCLUDED.comment='' THEN programs.comment ELSE EXCLUDED.comment END";
                 ins.ExecuteNonQuery();
             }
-            return true;
+            return UpsertEpisodes(conn, dict);
         }
         catch (Exception ex) { LastSyobocalError = ex.Message; return false; }
+    }
+
+    /// <summary>
+    /// 話数マスタを更新する。TitleLookup の SubTitles（*01*サブタイトル）由来。
+    /// 話数の無い作品（映画・単発）はここには入らず、放送側で cnt=NULL の行が使われる。
+    /// </summary>
+    private bool UpsertEpisodes(NpgsqlConnection conn, Dictionary<int, SyobocalService.TitleRow> dict)
+    {
+        var rows = dict
+            .SelectMany(kv => kv.Value.SubTitles.Select(s => (Tid: kv.Key, Cnt: s.Key, Sub: s.Value)))
+            .ToList();
+        if (rows.Count == 0) return true;
+
+        foreach (var chunk in rows.Chunk(500))
+        {
+            using var ins = conn.CreateCommand();
+            var values = new List<string>();
+            int i = 0;
+            foreach (var (tid, cnt, sub) in chunk)
+            {
+                values.Add($"(@t{i},@c{i},@s{i})");
+                ins.Parameters.AddWithValue($"@t{i}", tid);
+                ins.Parameters.AddWithValue($"@c{i}", cnt);
+                ins.Parameters.AddWithValue($"@s{i}", sub ?? "");
+                i++;
+            }
+            ins.CommandText =
+                "INSERT INTO program_episodes (program_id, cnt, sub_title) " +
+                "SELECT p.program_id, x.cnt, x.sub FROM (VALUES " + string.Join(",", values) +
+                ") AS x(tid, cnt, sub) " +
+                "JOIN programs p ON p.src='syobocal' AND p.src_id = x.tid " +
+                "ON CONFLICT (program_id, COALESCE(cnt, -1)) DO UPDATE SET " +
+                "sub_title=CASE WHEN EXCLUDED.sub_title='' " +
+                "THEN program_episodes.sub_title ELSE EXCLUDED.sub_title END";
+            ins.ExecuteNonQuery();
+        }
+        return true;
     }
 
     /// <summary>syobocal_titles に無い TID を返す（TitleLookup で補充すべき対象）。</summary>
