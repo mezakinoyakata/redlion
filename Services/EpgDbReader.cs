@@ -558,6 +558,71 @@ public sealed class EpgDbReader
     }
 
     /// <summary>
+    /// events が無い期間の最速判定。しょぼカルと手持ちファイルだけで判定する。
+    ///
+    /// events の蓄積は 2026-06 からで、それ以前の録画は EPG 側に対応する行が無いため
+    /// <see cref="GetFastestKeysViaJoin"/> では一件も拾えない。しょぼカルは
+    /// それより前から放送予定を持っているので、EPG の代わりにファイル自身を突き合わせ先にする。
+    ///
+    /// events を使う版との違いは「放送が実在した証拠」を何に求めるかだけで、
+    /// ここでは手元に録画ファイルがあること自体を証拠とする。
+    /// 話数が無い放送・カバー範囲より前に始まった作品を除く条件は同じ。
+    /// </summary>
+    public HashSet<(string ServiceName, DateTime StartTime)>? GetFastestKeysFromFilesOnly(
+        DateTime lo, DateTime hi, int coveredFromYm,
+        IReadOnlyCollection<(string Station, DateTime Time)> fileKeys)
+    {
+        LastSyobocalError = null;
+        if (!IsConfigured || fileKeys.Count == 0) return null;
+        try
+        {
+            using var conn = new NpgsqlConnection(_connStr);
+            conn.Open();
+            CreateFileKeyTempTable(conn, fileKeys);
+
+            using var cmd = conn.CreateCommand();
+            cmd.CommandTimeout = 60;
+            // 1つの放送に複数のファイルがぶら下がらないよう、±5分で最も近い1件に限定する。
+            // events 版と同じ理由（数分差の別番組を道連れにする）。
+            cmd.CommandText = """
+                SELECT DISTINCT fk.service_name, fk.start_time
+                FROM syobocal_airings a
+                JOIN syobocal_service_map sm ON sm.chid = a.chid
+                JOIN tmp_file_keys fk ON fk.service_name = sm.service_name
+                    AND fk.start_time = (
+                        SELECT fk2.start_time FROM tmp_file_keys fk2
+                        WHERE fk2.service_name = sm.service_name
+                          AND fk2.start_time BETWEEN a.st_time - INTERVAL '5 minutes'
+                                                 AND a.st_time + INTERVAL '5 minutes'
+                        ORDER BY ABS(EXTRACT(EPOCH FROM (fk2.start_time - a.st_time)))
+                        LIMIT 1
+                    )
+                LEFT JOIN syobocal_titles t ON t.tid = a.tid
+                WHERE a.cnt IS NOT NULL
+                  AND a.st_time >= @lo AND a.st_time <= @hi
+                  AND (t.first_ym IS NULL OR t.first_ym = 0 OR t.first_ym >= @coveredFromYm)
+                  AND NOT EXISTS (
+                      SELECT 1 FROM syobocal_airings a2
+                      WHERE a2.tid = a.tid AND a2.cnt = a.cnt AND a2.st_time < a.st_time
+                  )
+                """;
+            cmd.Parameters.AddWithValue("@lo", lo);
+            cmd.Parameters.AddWithValue("@hi", hi);
+            cmd.Parameters.AddWithValue("@coveredFromYm", coveredFromYm);
+            using var r = cmd.ExecuteReader();
+            var set = new HashSet<(string, DateTime)>();
+            while (r.Read())
+                if (!r.IsDBNull(0) && !r.IsDBNull(1))
+                {
+                    var t = r.GetDateTime(1);
+                    set.Add((r.GetString(0), t.AddTicks(-(t.Ticks % TimeSpan.TicksPerMinute))));
+                }
+            return set;
+        }
+        catch (Exception ex) { LastSyobocalError = ex.Message; return null; }
+    }
+
+    /// <summary>
     /// 手持ちの録画ファイルの (局名, 開始時刻[分単位]) を一時テーブルに載せる。
     /// service_name は services.service_name と同じ型・照合順序（varchar(256) utf8mb4_0900_ai_ci）に
     /// 揃えないと、結合時に文字コード変換が入って索引が効かなくなる。

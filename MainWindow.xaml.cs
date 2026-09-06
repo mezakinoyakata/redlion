@@ -73,8 +73,11 @@ public partial class MainWindow : Window
     /// どのマシンから起動しても syobocal_* を共有するため同じ判定が見える。
     /// ① まず DB の現在の syobocal_* + events の JOIN 結果で即マーク反映
     ///    （別マシンが同期済み、または前回起動分ならここで出る）
-    /// ② しょぼカルを同期（events 蓄積期間のみ。カバー済みなら通信なし）
+    /// ② しょぼカルを同期（手持ちファイルの期間。カバー済みなら通信なし）
     /// ③ 同期で更新があれば JOIN 結果を読み直して再反映
+    ///
+    /// events の蓄積は 2026-06 からなので、それ以前のファイルは events と JOIN できない。
+    /// その分はしょぼカルとファイルだけで判定する（GetFastestKeysFromFilesOnly）。
     /// </summary>
     private async void LoadSyobocal()
     {
@@ -85,25 +88,22 @@ public partial class MainWindow : Window
             var reader = _epgReader;
             if (!reader.IsConfigured) return;
 
-            var eventsMin = await Task.Run(reader.GetEventsMinStartTime);
-            if (eventsMin == null) return;
-
-            // 判定対象のファイル（events の蓄積期間内のもののみ）。
-            // 判定クエリにも渡して events 側を先に絞る（渡さないと局単位で全走査になる）。
+            // 判定対象のファイル。判定クエリにも渡して events 側を先に絞る
+            // （渡さないと局単位で全走査になる）。
             var fileKeys = _mediaFiles.Concat(_searchFiles ?? [])
                 .Where(f => !f.IsDirectory && f.ParsedStartTime.HasValue && !string.IsNullOrEmpty(f.ParsedStation))
                 .Select(f => (f.ParsedStation, f.ParsedStartTime!.Value))
-                .Where(k => k.Item2 >= eventsMin.Value)
                 .Distinct()
                 .ToList();
             if (fileKeys.Count == 0) return;
+
+            var eventsMin = await Task.Run(reader.GetEventsMinStartTime);
 
             // ① DB の現在値で即マーク
             var (coveredFrom, _, _) = await Task.Run(reader.GetSyobocalMeta);
             if (coveredFrom != 0)
             {
-                var keysNow = await Task.Run(() =>
-                    reader.GetFastestKeysViaJoin(eventsMin.Value, DateTime.Now, coveredFrom, fileKeys));
+                var keysNow = await Task.Run(() => CollectFastestKeys(reader, eventsMin, coveredFrom, fileKeys));
                 if (keysNow != null && !SetEquals(_fastestKeys, keysNow))
                 {
                     _fastestKeys = keysNow;
@@ -113,17 +113,49 @@ public partial class MainWindow : Window
 
             // ② しょぼカル同期（カバー済みなら通信なし）
             var changed = await _syobocal.SyncToDbAsync(
-                reader, fileKeys, eventsMin.Value, msg => StatusText.Text = msg);
+                reader, fileKeys, msg => StatusText.Text = msg);
             if (!changed) return;
 
             // ③ 読み直して反映
             var (coveredFrom2, _, _) = await Task.Run(reader.GetSyobocalMeta);
             if (coveredFrom2 == 0) return;
-            _fastestKeys = await Task.Run(() =>
-                reader.GetFastestKeysViaJoin(eventsMin.Value, DateTime.Now, coveredFrom2, fileKeys)) ?? _fastestKeys;
+            _fastestKeys = await Task.Run(() => CollectFastestKeys(reader, eventsMin, coveredFrom2, fileKeys))
+                           ?? _fastestKeys;
             RefreshFastestMarks();
         }
         finally { _syoboSyncing = false; }
+    }
+
+    /// <summary>
+    /// 最速キーを集める。events がある期間は events と JOIN し（EPG に無い放送を除ける）、
+    /// events より前の期間は手持ちファイルとしょぼカルだけで判定する。
+    /// </summary>
+    private static HashSet<(string, DateTime)>? CollectFastestKeys(
+        EpgDbReaderService reader, DateTime? eventsMin, int coveredFromYm,
+        List<(string Station, DateTime Time)> fileKeys)
+    {
+        var result = new HashSet<(string, DateTime)>();
+        var any = false;
+
+        var withEvents = eventsMin == null ? [] : fileKeys.Where(k => k.Time >= eventsMin.Value).ToList();
+        if (withEvents.Count > 0)
+        {
+            var keys = reader.GetFastestKeysViaJoin(
+                eventsMin!.Value, DateTime.Now, coveredFromYm, withEvents);
+            if (keys != null) { result.UnionWith(keys); any = true; }
+        }
+
+        var beforeEvents = eventsMin == null ? fileKeys
+                         : fileKeys.Where(k => k.Time < eventsMin.Value).ToList();
+        if (beforeEvents.Count > 0)
+        {
+            var hi = eventsMin ?? DateTime.Now;
+            var keys = reader.GetFastestKeysFromFilesOnly(
+                beforeEvents.Min(k => k.Time).AddDays(-1), hi, coveredFromYm, beforeEvents);
+            if (keys != null) { result.UnionWith(keys); any = true; }
+        }
+
+        return any ? result : null;
     }
 
     private static bool SetEquals(HashSet<(string, DateTime)>? a, HashSet<(string, DateTime)> b) =>

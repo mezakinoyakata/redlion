@@ -58,6 +58,28 @@ public class PostgresQueryTests
         Assert.Contains(list, e => e.EventName.Length > 0 && e.ServiceName.Length > 0);
     }
 
+    /// <summary>
+    /// events が無い期間（2026-06 より前）の最速判定。
+    /// events と JOIN しない別クエリなので、実 DB で通ることを確かめる。
+    /// </summary>
+    [Fact]
+    public void events以前の最速判定クエリが実行できる()
+    {
+        if (!DbAvailable()) return;
+
+        var reader = new EpgDbReader(ConnStr);
+        var (coveredFrom, _, _) = reader.GetSyobocalMeta();
+        var min = reader.GetEventsMinStartTime();
+        if (min == null || coveredFrom == 0) return;   // しょぼカル未整備
+
+        // events 蓄積開始より前のファイルを想定する
+        var fileKeys = new[] { ("ＮＨＫ総合１・東京", min.Value.AddDays(-30)) };
+        var keys = reader.GetFastestKeysFromFilesOnly(
+            min.Value.AddDays(-60), min.Value, coveredFrom, fileKeys);
+
+        Assert.True(keys != null, "クエリ失敗: " + reader.LastSyobocalError);
+    }
+
     [Fact]
     public void サービス名一覧が取得できる()
     {

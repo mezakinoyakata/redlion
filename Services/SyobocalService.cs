@@ -51,15 +51,16 @@ public sealed class SyobocalService
     public async Task<bool> SyncToDbAsync(
         EpgDbReader reader,
         IReadOnlyCollection<(string Station, DateTime Time)> fileKeys,
-        DateTime eventsMin,
         Action<string>? progress = null)
     {
         if (fileKeys.Count == 0) return false;
         var stations = fileKeys.Select(k => k.Station).Distinct().ToList();
-        // events 蓄積開始前・未来の時刻は判定対象外なのでクランプ
+        // 取得範囲は手持ちファイルの期間に合わせる。
+        // 以前は events の蓄積開始(2026-06)でクランプしていたが、それ以前の録画も
+        // しょぼカルとファイルだけで最速判定できるようにしたため、遡って取得する
+        // （EpgDbReader.GetFastestKeysFromFilesOnly）。
         var minTime = fileKeys.Min(k => k.Time);
         var maxTime = fileKeys.Max(k => k.Time);
-        if (minTime < eventsMin) minTime = eventsMin;
         if (maxTime > DateTime.Now) maxTime = DateTime.Now;
         if (maxTime < minTime) maxTime = minTime;
 
