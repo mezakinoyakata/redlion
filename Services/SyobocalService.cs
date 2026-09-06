@@ -159,7 +159,11 @@ public sealed class SyobocalService
                 changed = true;
             }
 
-            if (anyFailed) progress?.Invoke("しょぼカル同期に一部失敗（syobocal.log 参照）");
+            // 取得するものが無くても必ず表示を終わらせる。
+            // これが無いと「チャンネル一覧取得中...」が出たまま残り、
+            // 延々と取得しているように見える（直近分の再取得は間隔を空けるので、
+            // しばらくは毎回「何も取得しない」経路を通る）。
+            progress?.Invoke(anyFailed ? "しょぼカル同期に一部失敗（syobocal.log 参照）" : "");
         }
         catch (Exception ex)
         {
