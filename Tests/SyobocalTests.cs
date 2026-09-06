@@ -9,7 +9,8 @@ public class SyobocalTests
     private const string ProgXml = """
         <?xml version="1.0" encoding="UTF-8"?><ProgLookupResponse><ProgItems>
         <ProgItem id="1"><PID>100</PID><TID>7887</TID><StTime>2026-07-04 21:00:00</StTime>
-        <EdTime>2026-07-04 21:30:00</EdTime><Count>1</Count><Flag>1</Flag><Deleted>0</Deleted>
+        <EdTime>2026-07-04 21:30:00</EdTime><Count>1</Count><SubTitle>初陣</SubTitle>
+        <Flag>1</Flag><Deleted>0</Deleted>
         <Warn>0</Warn><ChID>19</ChID><Revision>0</Revision></ProgItem>
         <ProgItem id="2"><PID>101</PID><TID>7887</TID><StTime>2026-07-09 22:30:00</StTime>
         <Count></Count><Flag>0</Flag><Deleted>0</Deleted><ChID>20</ChID></ProgItem>
@@ -70,8 +71,41 @@ public class SyobocalTests
     public void ParseTitleFirstYm_ReadsYearMonth()
     {
         var d = SyobocalService.ParseTitleFirstYm(TitleXml);
-        Assert.Equal(202606, d[7887]);
-        Assert.Equal(0, d[42]);
+        Assert.Equal(202606, d[7887].FirstYm);
+        Assert.Equal(0, d[42].FirstYm);
+        Assert.Equal("猫と竜", d[7887].Title);
+    }
+
+    [Fact]
+    public void ParseProgs_ReadsEndTimeAndSubTitle()
+    {
+        var (rows, _) = SyobocalService.ParseProgs(ProgXml);
+        Assert.Equal(new DateTime(2026, 7, 4, 21, 30, 0), rows[0].EdTime);
+        Assert.Equal("初陣", rows[0].SubTitle);
+        Assert.Null(rows[1].EdTime);        // EdTime が無い放送もある
+        Assert.Equal("", rows[1].SubTitle);
+    }
+
+    // ─── 作品解説の整形 ─────────────────────────────────────────────────────
+
+    [Fact]
+    public void CleanWiki_StripsMarkup()
+    {
+        var s = SyobocalService.CleanWiki(
+            "*あらすじ\n''勇者''が[[魔王]]を倒す。\n\n\n*スタッフ\n監督：[[山田太郎|1234]]\n");
+
+        Assert.Contains("あらすじ", s);
+        Assert.Contains("勇者が魔王を倒す。", s);   // '' と [[ ]] が落ちている
+        Assert.Contains("監督：山田太郎", s);       // [[表示|リンク先]] は表示側だけ残す
+        Assert.DoesNotContain("[[", s);
+        Assert.DoesNotContain("\n\n\n", s);         // 空行の連続はまとめる
+    }
+
+    [Fact]
+    public void CleanWiki_EmptyStaysEmpty()
+    {
+        Assert.Equal("", SyobocalService.CleanWiki(""));
+        Assert.Equal("", SyobocalService.CleanWiki("   \n  \n"));
     }
 
     // ─── チャンネル対応付け ─────────────────────────────────────────────────

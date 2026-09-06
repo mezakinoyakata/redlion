@@ -80,6 +80,24 @@ public class PostgresQueryTests
         Assert.True(keys != null, "クエリ失敗: " + reader.LastSyobocalError);
     }
 
+    /// <summary>
+    /// しょぼカルからの合成 events 行を作るクエリ。
+    /// 実データを増やさないよう、しょぼカルのデータが無い期間を指定して構文と型だけ確かめる。
+    /// </summary>
+    [Fact]
+    public void 合成events行の生成クエリが実行できる()
+    {
+        if (!DbAvailable()) return;
+
+        var reader = new EpgDbReader(ConnStr);
+        Assert.True(reader.EnsureSyobocalTables(), reader.LastSyobocalError);   // 列追加を先に
+
+        var n = reader.BuildSyntheticEvents(new DateTime(1990, 1, 1), new DateTime(1990, 2, 1));
+
+        Assert.True(n >= 0, "クエリ失敗: " + reader.LastSyobocalError);
+        Assert.Equal(0, n);   // この期間にしょぼカルのデータは無い
+    }
+
     [Fact]
     public void サービス名一覧が取得できる()
     {

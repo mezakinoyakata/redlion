@@ -116,7 +116,20 @@ public partial class MainWindow : Window
                 reader, fileKeys, msg => StatusText.Text = msg);
             if (!changed) return;
 
-            // ③ 読み直して反映
+            // ③ EPG が無い期間の番組表を、しょぼカルから作った合成行で埋める
+            //    （event_id >= SyntheticEventIdBase。実 EPG の行は書き換えない）
+            if (eventsMin != null)
+            {
+                var oldest = fileKeys.Min(k => k.Item2).AddDays(-1);
+                if (oldest < eventsMin.Value)
+                {
+                    StatusText.Text = "過去の番組表を作成中…";
+                    var n = await Task.Run(() => reader.BuildSyntheticEvents(oldest, eventsMin.Value));
+                    StatusText.Text = n < 0 ? "過去の番組表の作成に失敗: " + reader.LastSyobocalError : "";
+                }
+            }
+
+            // ④ 読み直して反映
             var (coveredFrom2, _, _) = await Task.Run(reader.GetSyobocalMeta);
             if (coveredFrom2 == 0) return;
             _fastestKeys = await Task.Run(() => CollectFastestKeys(reader, eventsMin, coveredFrom2, fileKeys))

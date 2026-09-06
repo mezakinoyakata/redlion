@@ -38,8 +38,14 @@ public sealed class SyobocalService
         return c;
     }
 
+    private static readonly System.Text.RegularExpressions.Regex WikiLink =
+        new(@"\[\[([^\]]+)\]\]", System.Text.RegularExpressions.RegexOptions.Compiled);
+    private static readonly System.Text.RegularExpressions.Regex BlankRuns =
+        new(@"\n{3,}", System.Text.RegularExpressions.RegexOptions.Compiled);
+
     internal sealed record ChRow(int ChID, string Name, string EpgName, int Gid);
-    internal sealed record ProgRow(int PID, int TID, int? Count, int ChID, DateTime StTime);
+    internal sealed record ProgRow(int PID, int TID, int? Count, int ChID, DateTime StTime,
+                                   DateTime? EdTime, string SubTitle);
 
     // ─── 同期 ───────────────────────────────────────────────────────────────
 
@@ -147,14 +153,14 @@ public sealed class SyobocalService
             {
                 progress?.Invoke("しょぼカル: 作品情報取得中...");
                 Log($"TitleLookup: {missing.Count} tids");
-                var result = new Dictionary<int, int>();
+                var result = new Dictionary<int, (int FirstYm, string Title, string Comment)>();
                 foreach (var chunk in missing.Chunk(50))
                 {
                     foreach (var kv in ParseTitleFirstYm(
                         await GetAsync("Command=TitleLookup&TID=" + string.Join(",", chunk))))
                         result[kv.Key] = kv.Value;
                     foreach (var tid in chunk)
-                        result.TryAdd(tid, 0);  // 応答に含まれなかった分も再問合せしないよう記録
+                        result.TryAdd(tid, (0, "", ""));  // 応答に含まれなかった分も再問合せしないよう記録
                 }
                 reader.UpsertTitleFirstYm(result);
                 changed = true;
@@ -234,7 +240,7 @@ public sealed class SyobocalService
         var tvChids = channels.Where(c => !NonTvChGids.Contains(c.Gid)).Select(c => c.ChID).ToHashSet();
         var keep = rows.Where(r => tvChids.Contains(r.ChID)).ToList();
         if (!reader.ReplaceAiringsInRange(lo, hi,
-                keep.Select(r => (r.PID, r.TID, r.Count, r.ChID, r.StTime)).ToList()))
+                keep.Select(r => (r.PID, r.TID, r.Count, r.ChID, r.StTime, r.EdTime, r.SubTitle)).ToList()))
             throw new InvalidOperationException($"ReplaceAiringsInRange failed: {reader.LastSyobocalError}");
         return keep.Select(r => r.TID).ToHashSet();
     }
@@ -359,24 +365,58 @@ public sealed class SyobocalService
             if (((string?)x.Element("Deleted") ?? "0") != "0") { deleted.Add(pid); continue; }
             if (!DateTime.TryParse((string?)x.Element("StTime"), out var st)) continue;
             int? count = int.TryParse((string?)x.Element("Count"), out var c) ? c : null;
+            // EdTime は番組表の枠の高さに使う。無い放送もあるので null 許容
+            DateTime? ed = DateTime.TryParse((string?)x.Element("EdTime"), out var e) ? e : null;
             rows.Add(new ProgRow(pid, (int?)x.Element("TID") ?? 0, count,
-                                 (int?)x.Element("ChID") ?? 0, st));
+                                 (int?)x.Element("ChID") ?? 0, st, ed,
+                                 ((string?)x.Element("SubTitle") ?? "").Trim()));
         }
         return (rows, deleted);
     }
 
-    internal static Dictionary<int, int> ParseTitleFirstYm(string xml)
+    internal static Dictionary<int, (int FirstYm, string Title, string Comment)> ParseTitleFirstYm(string xml)
     {
-        var result = new Dictionary<int, int>();
+        var result = new Dictionary<int, (int, string, string)>();
         foreach (var x in XDocument.Parse(SanitizeXml(xml)).Descendants("TitleItem"))
         {
             var tid = (int?)x.Element("TID") ?? 0;
             if (tid == 0) continue;
             var y = int.TryParse((string?)x.Element("FirstYear"),  out var yy) ? yy : 0;
             var m = int.TryParse((string?)x.Element("FirstMonth"), out var mm) ? mm : 0;
-            result[tid] = y > 0 && m > 0 ? y * 100 + m : 0;
+            result[tid] = (y > 0 && m > 0 ? y * 100 + m : 0,
+                           ((string?)x.Element("Title") ?? "").Trim(),
+                           CleanWiki((string?)x.Element("Comment") ?? ""));
         }
         return result;
+    }
+
+    /// <summary>
+    /// しょぼカルの Comment は Wiki 記法で書かれている。番組表の説明欄に出すので、
+    /// 記号を落として素の文章にする（スタッフ・キャストの行はそのまま残す）。
+    /// </summary>
+    internal static string CleanWiki(string s)
+    {
+        if (string.IsNullOrWhiteSpace(s)) return "";
+        s = s.Replace("\r\n", "\n").Replace('\r', '\n');
+        var sb = new StringBuilder();
+        foreach (var raw in s.Split('\n'))
+        {
+            var line = raw.Trim();
+            if (line.Length == 0) { sb.Append('\n'); continue; }
+            // 見出し (*, **, ***) は行頭の * を落とす
+            line = line.TrimStart('*').Trim();
+            // [[リンク]] / [[表示|リンク先]] は表示側だけ残す
+            line = WikiLink.Replace(line, mm =>
+            {
+                var inner = mm.Groups[1].Value;
+                var bar = inner.IndexOf('|');
+                return bar >= 0 ? inner[..bar] : inner;
+            });
+            line = line.Replace("''", "");           // 強調
+            sb.Append(line).Append('\n');
+        }
+        // 空行の連続を1つにまとめる
+        return BlankRuns.Replace(sb.ToString(), "\n\n").Trim();
     }
 
     // ─── ログ ───────────────────────────────────────────────────────────────

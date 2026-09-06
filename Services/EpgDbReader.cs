@@ -224,7 +224,7 @@ public sealed class EpgDbReader
                     ONID          = (ushort)r.GetInt32(0),
                     TSID          = (ushort)r.GetInt32(1),
                     SID           = (ushort)r.GetInt32(2),
-                    EventID       = (ushort)r.GetInt32(3),
+                    EventID       = r.GetInt32(3),
                     ServiceName   = r.IsDBNull(4) ? "" : r.GetString(4),
                     StartTime     = r.IsDBNull(5) ? null : (DateTime?)r.GetDateTime(5),
                     DurationSec   = r.IsDBNull(6) ? null : (uint?)r.GetInt32(6),
@@ -288,6 +288,10 @@ public sealed class EpgDbReader
                     k VARCHAR(64) NOT NULL PRIMARY KEY,
                     v VARCHAR(255) NOT NULL
                 );
+                ALTER TABLE syobocal_airings ADD COLUMN IF NOT EXISTS ed_time TIMESTAMP NULL;
+                ALTER TABLE syobocal_airings ADD COLUMN IF NOT EXISTS sub_title VARCHAR(512) NOT NULL DEFAULT '';
+                ALTER TABLE syobocal_titles  ADD COLUMN IF NOT EXISTS title VARCHAR(512) NOT NULL DEFAULT '';
+                ALTER TABLE syobocal_titles  ADD COLUMN IF NOT EXISTS comment TEXT NOT NULL DEFAULT '';
                 """;
             foreach (var stmt in cmd.CommandText.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
             {
@@ -347,7 +351,8 @@ public sealed class EpgDbReader
     /// <summary>指定期間の syobocal_airings を削除し、新しい行群で置き換える（同期の1チャンク分）。</summary>
     public bool ReplaceAiringsInRange(
         DateTime rangeLo, DateTime rangeHi,
-        IReadOnlyCollection<(int Pid, int Tid, int? Cnt, int ChId, DateTime StTime)> rows)
+        IReadOnlyCollection<(int Pid, int Tid, int? Cnt, int ChId, DateTime StTime,
+                             DateTime? EdTime, string SubTitle)> rows)
     {
         LastSyobocalError = null;
         if (!IsConfigured) return false;
@@ -367,23 +372,27 @@ public sealed class EpgDbReader
                 using var ins = conn.CreateCommand();
                 var values = new List<string>();
                 int i = 0;
-                foreach (var (pid, tid, cnt, chid, st) in chunk)
+                foreach (var (pid, tid, cnt, chid, st, ed, sub) in chunk)
                 {
-                    values.Add($"(@p{i},@t{i},@c{i},@h{i},@s{i})");
+                    values.Add($"(@p{i},@t{i},@c{i},@h{i},@s{i},@e{i},@b{i})");
                     ins.Parameters.AddWithValue($"@p{i}", pid);
                     ins.Parameters.AddWithValue($"@t{i}", tid);
                     if (cnt.HasValue) ins.Parameters.AddWithValue($"@c{i}", cnt.Value);
                     else ins.Parameters.AddWithValue($"@c{i}", DBNull.Value);
                     ins.Parameters.AddWithValue($"@h{i}", chid);
                     ins.Parameters.AddWithValue($"@s{i}", st);
+                    if (ed.HasValue) ins.Parameters.AddWithValue($"@e{i}", ed.Value);
+                    else ins.Parameters.AddWithValue($"@e{i}", DBNull.Value);
+                    ins.Parameters.AddWithValue($"@b{i}", sub ?? "");
                     i++;
                 }
                 if (values.Count == 0) continue;
                 ins.CommandText =
-                    "INSERT INTO syobocal_airings (pid,tid,cnt,chid,st_time) VALUES " +
+                    "INSERT INTO syobocal_airings (pid,tid,cnt,chid,st_time,ed_time,sub_title) VALUES " +
                     string.Join(",", values) +
                     " ON CONFLICT (pid) DO UPDATE SET tid=EXCLUDED.tid, cnt=EXCLUDED.cnt," +
-                    " chid=EXCLUDED.chid, st_time=EXCLUDED.st_time";
+                    " chid=EXCLUDED.chid, st_time=EXCLUDED.st_time," +
+                    " ed_time=EXCLUDED.ed_time, sub_title=EXCLUDED.sub_title";
                 ins.ExecuteNonQuery();
             }
             return true;
@@ -428,7 +437,7 @@ public sealed class EpgDbReader
         catch (Exception ex) { LastSyobocalError = ex.Message; return false; }
     }
 
-    public bool UpsertTitleFirstYm(Dictionary<int, int> dict)
+    public bool UpsertTitleFirstYm(Dictionary<int, (int FirstYm, string Title, string Comment)> dict)
     {
         if (!IsConfigured || dict.Count == 0) return false;
         try
@@ -442,14 +451,19 @@ public sealed class EpgDbReader
                 int i = 0;
                 foreach (var kv in chunk)
                 {
-                    values.Add($"(@t{i},@y{i})");
+                    values.Add($"(@t{i},@y{i},@n{i},@c{i})");
                     ins.Parameters.AddWithValue($"@t{i}", kv.Key);
-                    ins.Parameters.AddWithValue($"@y{i}", kv.Value);
+                    ins.Parameters.AddWithValue($"@y{i}", kv.Value.FirstYm);
+                    ins.Parameters.AddWithValue($"@n{i}", kv.Value.Title ?? "");
+                    ins.Parameters.AddWithValue($"@c{i}", kv.Value.Comment ?? "");
                     i++;
                 }
-                ins.CommandText = "INSERT INTO syobocal_titles (tid, first_ym) VALUES " +
+                // 作品名・解説は後から取れることがあるので、空で上書きしない
+                ins.CommandText = "INSERT INTO syobocal_titles (tid, first_ym, title, comment) VALUES " +
                                   string.Join(",", values) +
-                                  " ON CONFLICT (tid) DO UPDATE SET first_ym=EXCLUDED.first_ym";
+                                  " ON CONFLICT (tid) DO UPDATE SET first_ym=EXCLUDED.first_ym," +
+                                  " title=CASE WHEN EXCLUDED.title='' THEN syobocal_titles.title ELSE EXCLUDED.title END," +
+                                  " comment=CASE WHEN EXCLUDED.comment='' THEN syobocal_titles.comment ELSE EXCLUDED.comment END";
                 ins.ExecuteNonQuery();
             }
             return true;
@@ -555,6 +569,94 @@ public sealed class EpgDbReader
             return set;
         }
         catch (Exception ex) { LastSyobocalError = ex.Message; return null; }
+    }
+
+    /// <summary>
+    /// 合成 events 行の event_id の下駄。実 EPG の event_id は 16bit（最大 65535）なので、
+    /// これを足した値は実データと絶対に衝突しない。合成行だけを消したいときは
+    /// DELETE FROM events WHERE event_id >= 1000000 でよい。
+    /// </summary>
+    public const int SyntheticEventIdBase = 1_000_000;
+
+    /// <summary>
+    /// しょぼカルの放送データから events 行を作る（EPG が無い期間の番組表用）。
+    ///
+    /// EDCB の EPG は 2026-06 からしか無い。それ以前を番組表で見られるようにするため、
+    /// しょぼカルが持っている放送予定を events の形に変換して入れる。
+    /// event_id は放送ID(PID)に <see cref="SyntheticEventIdBase"/> を足したもので、
+    /// 実 EPG の行を書き換えることはない。
+    ///
+    /// 入るのはアニメのみ・syobocal_service_map に対応のあるチャンネルのみ。
+    /// 番組名は「作品名 #話数 サブタイトル」、説明は作品解説（話ごとではない）。
+    /// </summary>
+    /// <returns>書き込んだ行数。失敗時は -1。</returns>
+    public int BuildSyntheticEvents(DateTime lo, DateTime hi)
+    {
+        LastSyobocalError = null;
+        if (!IsConfigured) return -1;
+        try
+        {
+            using var conn = new NpgsqlConnection(_connStr);
+            conn.Open();
+
+            int n;
+            using (var cmd = conn.CreateCommand())
+            {
+                cmd.CommandTimeout = 300;
+                cmd.CommandText = $"""
+                    INSERT INTO events (
+                        onid, tsid, sid, event_id, start_time, duration_sec,
+                        event_name, short_text, ext_text,
+                        component_stream_content, component_type, component_tag, component_text,
+                        free_ca_flag, updated_at, year_week, reserve_status)
+                    SELECT s.onid, s.tsid, s.sid, a.pid + {SyntheticEventIdBase}, a.st_time,
+                           CASE WHEN a.ed_time IS NULL THEN NULL
+                                ELSE GREATEST(0, EXTRACT(EPOCH FROM (a.ed_time - a.st_time))::int) END,
+                           left(trim(coalesce(t.title, '') ||
+                                CASE WHEN a.cnt IS NULL THEN '' ELSE ' #' || a.cnt END ||
+                                CASE WHEN a.sub_title = '' THEN '' ELSE ' ' || a.sub_title END), 512),
+                           a.sub_title,
+                           coalesce(t.comment, ''),
+                           NULL, NULL, NULL, '',
+                           0, now(), 0, 0
+                    FROM syobocal_airings a
+                    JOIN syobocal_service_map sm ON sm.chid = a.chid
+                    JOIN services s ON s.service_name = sm.service_name
+                    LEFT JOIN syobocal_titles t ON t.tid = a.tid
+                    WHERE a.st_time >= @lo AND a.st_time < @hi
+                    ON CONFLICT (onid, tsid, sid, event_id) DO UPDATE SET
+                        start_time   = EXCLUDED.start_time,
+                        duration_sec = EXCLUDED.duration_sec,
+                        event_name   = EXCLUDED.event_name,
+                        short_text   = EXCLUDED.short_text,
+                        ext_text     = EXCLUDED.ext_text,
+                        updated_at   = EXCLUDED.updated_at
+                    """;
+                cmd.Parameters.AddWithValue("@lo", lo);
+                cmd.Parameters.AddWithValue("@hi", hi);
+                n = cmd.ExecuteNonQuery();
+            }
+
+            // ジャンルは全てアニメ（EDCB のジャンル大分類 7）
+            using (var g = conn.CreateCommand())
+            {
+                g.CommandTimeout = 300;
+                g.CommandText = $"""
+                    INSERT INTO event_genres (onid, tsid, sid, event_id, seq,
+                                              nibble_l1, nibble_l2, user_nibble_1, user_nibble_2)
+                    SELECT e.onid, e.tsid, e.sid, e.event_id, 0, 7, 15, 15, 15
+                    FROM events e
+                    WHERE e.event_id >= {SyntheticEventIdBase}
+                      AND e.start_time >= @lo AND e.start_time < @hi
+                    ON CONFLICT (onid, tsid, sid, event_id, seq) DO NOTHING
+                    """;
+                g.Parameters.AddWithValue("@lo", lo);
+                g.Parameters.AddWithValue("@hi", hi);
+                g.ExecuteNonQuery();
+            }
+            return n;
+        }
+        catch (Exception ex) { LastSyobocalError = ex.Message; return -1; }
     }
 
     /// <summary>
@@ -726,7 +828,7 @@ public sealed class EpgDbReader
                 ONID        = (ushort)r.GetInt32(0),
                 TSID        = (ushort)r.GetInt32(1),
                 SID         = (ushort)r.GetInt32(2),
-                EventID     = (ushort)r.GetInt32(3),
+                EventID     = r.GetInt32(3),
                 ServiceName = r.IsDBNull(4)  ? "" : r.GetString(4),
                 StartTime   = r.IsDBNull(5)  ? null : (DateTime?)r.GetDateTime(5),
                 DurationSec = r.IsDBNull(6)  ? null : (uint?)r.GetInt32(6),
