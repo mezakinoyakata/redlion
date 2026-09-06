@@ -116,18 +116,22 @@ public partial class MainWindow : Window
                 reader, fileKeys, msg => StatusText.Text = msg);
             if (!changed) return;
 
-            // ③ EPG が無い期間の番組表を、しょぼカルから作った合成行で埋める
-            //    （event_id >= SyntheticEventIdBase。実 EPG の行は書き換えない）
-            if (eventsMin != null)
+            // ③ 番組マスタと events を結ぶ
+            //    a) 放送レコードにあって話数マスタに無いものを補う
+            //    b) 実 EPG の行に episode_id を埋める（作品名・話数・解説が引けるようになる）
+            //    c) EPG が無い期間は合成行を作る
+            //       （event_id >= SyntheticEventIdBase。実 EPG の行は書き換えない）
+            StatusText.Text = "番組情報を整備中…";
+            var oldest = fileKeys.Min(k => k.Item2).AddDays(-1);
+            var linkOk = await Task.Run(() =>
             {
-                var oldest = fileKeys.Min(k => k.Item2).AddDays(-1);
-                if (oldest < eventsMin.Value)
-                {
-                    StatusText.Text = "過去の番組表を作成中…";
-                    var n = await Task.Run(() => reader.BuildSyntheticEvents(oldest, eventsMin.Value));
-                    StatusText.Text = n < 0 ? "過去の番組表の作成に失敗: " + reader.LastSyobocalError : "";
-                }
-            }
+                if (reader.EnsureEpisodesFromAirings() < 0) return false;
+                if (reader.LinkEventsToEpisodes(oldest, DateTime.Now) < 0) return false;
+                if (eventsMin != null && oldest < eventsMin.Value)
+                    return reader.BuildSyntheticEvents(oldest, eventsMin.Value) >= 0;
+                return true;
+            });
+            StatusText.Text = linkOk ? "" : "番組情報の整備に失敗: " + reader.LastSyobocalError;
 
             // ④ 読み直して反映
             var (coveredFrom2, _, _) = await Task.Run(reader.GetSyobocalMeta);

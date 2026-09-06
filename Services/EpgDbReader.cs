@@ -88,9 +88,15 @@ public sealed class EpgDbReader
             using var conn = new NpgsqlConnection(_connStr);
             conn.Open();
             using var cmd = conn.CreateCommand();
+            // EPG 側に説明が無い行（しょぼカル由来の過去分）は作品解説を出す。
+            // 解説はスタッフ・キャストを含む（範馬刃牙: 島﨑信長 …）。
             cmd.CommandText =
-                "SELECT short_text, ext_text FROM events " +
-                "WHERE onid=@o AND tsid=@t AND sid=@s AND event_id=@e LIMIT 1";
+                "SELECT e.short_text, " +
+                "CASE WHEN e.ext_text <> '' THEN e.ext_text ELSE coalesce(p.comment,'') END " +
+                "FROM events e " +
+                "LEFT JOIN program_episodes ep ON ep.episode_id = e.episode_id " +
+                "LEFT JOIN programs p ON p.program_id = ep.program_id " +
+                "WHERE e.onid=@o AND e.tsid=@t AND e.sid=@s AND e.event_id=@e LIMIT 1";
             cmd.Parameters.AddWithValue("@o", onid);
             cmd.Parameters.AddWithValue("@t", tsid);
             cmd.Parameters.AddWithValue("@s", sid);
@@ -201,13 +207,24 @@ public sealed class EpgDbReader
             using var conn = new NpgsqlConnection(_connStr);
             conn.Open();
             using var cmd = conn.CreateCommand();
+            // 番組名は events 自身の event_name を優先する（EDCB が受信した文字列で、
+            // [字] や煽り文などしょぼカルには無い情報を含む）。
+            // 空の行（しょぼカル由来の過去分）だけ番組マスタから組み立てる。
             cmd.CommandText =
                 "SELECT e.onid, e.tsid, e.sid, e.event_id, s.service_name, " +
-                "e.start_time, e.duration_sec, e.event_name, e.free_ca_flag, g.nibble_l1 " +
+                "e.start_time, e.duration_sec, " +
+                "CASE WHEN e.event_name <> '' THEN e.event_name ELSE " +
+                "  trim(coalesce(p.title,'') || " +
+                "       CASE WHEN ep.cnt IS NULL THEN '' ELSE ' #' || ep.cnt END || " +
+                "       CASE WHEN coalesce(ep.sub_title,'') = '' THEN '' " +
+                "            ELSE ' ' || ep.sub_title END) END, " +
+                "e.free_ca_flag, g.nibble_l1 " +
                 "FROM events e " +
                 "JOIN services s ON e.onid=s.onid AND e.tsid=s.tsid AND e.sid=s.sid " +
                 "LEFT JOIN event_genres g ON g.onid=e.onid AND g.tsid=e.tsid " +
                 "AND g.sid=e.sid AND g.event_id=e.event_id AND g.seq=0 " +
+                "LEFT JOIN program_episodes ep ON ep.episode_id = e.episode_id " +
+                "LEFT JOIN programs p ON p.program_id = ep.program_id " +
                 "WHERE e.start_time >= @lo AND e.start_time < @hi " +
                 "AND s.service_type=1 AND s.partial_reception=0 " +
                 "ORDER BY " +
@@ -658,6 +675,94 @@ public sealed class EpgDbReader
     /// 入るのはアニメのみ・syobocal_service_map に対応のあるチャンネルのみ。
     /// 番組名は「作品名 #話数 サブタイトル」、説明は作品解説（話ごとではない）。
     /// </summary>
+    /// <summary>
+    /// 放送レコードに出てくる (作品, 話数) のうち、話数マスタに無いものを補う。
+    ///
+    /// 話数タイトルは TitleLookup の SubTitles から作るが、そこに載っていない話数
+    /// （最終回未放送分、SubTitles 未整備の作品など）が放送レコード側にはある。
+    /// 補っておかないと、その放送は episode_id を持てず番組表にも最速判定にも出ない。
+    /// </summary>
+    /// <returns>追加した行数。失敗時は -1。</returns>
+    public int EnsureEpisodesFromAirings()
+    {
+        LastSyobocalError = null;
+        if (!IsConfigured) return -1;
+        try
+        {
+            using var conn = new NpgsqlConnection(_connStr);
+            conn.Open();
+            using var cmd = conn.CreateCommand();
+            cmd.CommandTimeout = 300;
+            cmd.CommandText = """
+                INSERT INTO program_episodes (program_id, cnt, sub_title)
+                SELECT p.program_id, a.cnt, ''
+                FROM syobocal_airings a
+                JOIN programs p ON p.src = 'syobocal' AND p.src_id = a.tid
+                GROUP BY p.program_id, a.cnt
+                ON CONFLICT (program_id, COALESCE(cnt, -1)) DO NOTHING
+                """;
+            return cmd.ExecuteNonQuery();
+        }
+        catch (Exception ex) { LastSyobocalError = ex.Message; return -1; }
+    }
+
+    /// <summary>
+    /// 実 EPG の行に episode_id を埋める。(チャンネル, 開始時刻±5分) で照合する。
+    ///
+    /// タイトル文字列では照合しない。EDCB 側は「［新］＜アニおび＞波よ聞いてくれ＃１…」、
+    /// しょぼカル側は「波よ聞いてくれ」と表記が違うため。
+    /// 1つの放送に対し最も近い events 行だけを結び付ける。
+    /// </summary>
+    /// <returns>埋めた行数。失敗時は -1。</returns>
+    public int LinkEventsToEpisodes(DateTime lo, DateTime hi)
+    {
+        LastSyobocalError = null;
+        if (!IsConfigured) return -1;
+        try
+        {
+            using var conn = new NpgsqlConnection(_connStr);
+            conn.Open();
+            using var cmd = conn.CreateCommand();
+            cmd.CommandTimeout = 300;
+            cmd.CommandText = $"""
+                WITH main_service AS (
+                    SELECT DISTINCT ON (sm.chid) sm.chid, s.onid, s.tsid, s.sid
+                    FROM syobocal_service_map sm
+                    JOIN services s ON s.service_name = sm.service_name
+                    LEFT JOIN events e ON e.onid=s.onid AND e.tsid=s.tsid AND e.sid=s.sid
+                         AND e.event_id < {SyntheticEventIdBase} AND e.event_name <> ''
+                    WHERE s.service_type=1 AND s.partial_reception=0 AND s.onid <> 11
+                    GROUP BY sm.chid, s.onid, s.tsid, s.sid
+                    ORDER BY sm.chid, count(e.event_id) DESC, s.onid, s.sid
+                ),
+                matched AS (
+                    SELECT DISTINCT ON (a.pid)
+                           e.onid, e.tsid, e.sid, e.event_id, ep.episode_id
+                    FROM syobocal_airings a
+                    JOIN main_service ms ON ms.chid = a.chid
+                    JOIN programs p          ON p.src='syobocal' AND p.src_id = a.tid
+                    JOIN program_episodes ep ON ep.program_id = p.program_id
+                                            AND COALESCE(ep.cnt,-1) = COALESCE(a.cnt,-1)
+                    JOIN events e ON e.onid=ms.onid AND e.tsid=ms.tsid AND e.sid=ms.sid
+                                 AND e.event_id < {SyntheticEventIdBase}
+                                 AND e.start_time BETWEEN a.st_time - INTERVAL '5 minutes'
+                                                      AND a.st_time + INTERVAL '5 minutes'
+                    WHERE a.st_time >= @lo AND a.st_time < @hi
+                    ORDER BY a.pid, ABS(EXTRACT(EPOCH FROM (e.start_time - a.st_time)))
+                )
+                UPDATE events e SET episode_id = m.episode_id
+                FROM matched m
+                WHERE e.onid=m.onid AND e.tsid=m.tsid AND e.sid=m.sid
+                  AND e.event_id=m.event_id
+                  AND e.episode_id IS DISTINCT FROM m.episode_id
+                """;
+            cmd.Parameters.AddWithValue("@lo", lo);
+            cmd.Parameters.AddWithValue("@hi", hi);
+            return cmd.ExecuteNonQuery();
+        }
+        catch (Exception ex) { LastSyobocalError = ex.Message; return -1; }
+    }
+
     /// <returns>書き込んだ行数。失敗時は -1。</returns>
     public int BuildSyntheticEvents(DateTime lo, DateTime hi)
     {
@@ -698,31 +803,31 @@ public sealed class EpgDbReader
                         GROUP BY sm.chid, s.onid, s.tsid, s.sid
                         ORDER BY sm.chid, count(e.event_id) DESC, s.onid, s.sid
                     )
+                    -- 番組名・解説はここに複製しない。episode_id からマスタを辿る。
+                    -- events はトラン情報（いつ・どこで・どの話か）だけを持つ。
                     INSERT INTO events (
                         onid, tsid, sid, event_id, start_time, duration_sec,
+                        episode_id,
                         event_name, short_text, ext_text,
                         component_stream_content, component_type, component_tag, component_text,
                         free_ca_flag, updated_at, year_week, reserve_status)
                     SELECT s.onid, s.tsid, s.sid, a.pid + {SyntheticEventIdBase}, a.st_time,
                            CASE WHEN a.ed_time IS NULL THEN NULL
                                 ELSE GREATEST(0, EXTRACT(EPOCH FROM (a.ed_time - a.st_time))::int) END,
-                           left(trim(coalesce(t.title, '') ||
-                                CASE WHEN a.cnt IS NULL THEN '' ELSE ' #' || a.cnt END ||
-                                CASE WHEN a.sub_title = '' THEN '' ELSE ' ' || a.sub_title END), 512),
-                           a.sub_title,
-                           coalesce(t.comment, ''),
+                           ep.episode_id,
+                           '', '', '',
                            NULL, NULL, NULL, '',
                            0, now(), 0, 0
                     FROM syobocal_airings a
                     JOIN main_service s ON s.chid = a.chid
-                    LEFT JOIN syobocal_titles t ON t.tid = a.tid
+                    JOIN programs p          ON p.src = 'syobocal' AND p.src_id = a.tid
+                    JOIN program_episodes ep ON ep.program_id = p.program_id
+                                            AND COALESCE(ep.cnt, -1) = COALESCE(a.cnt, -1)
                     WHERE a.st_time >= @lo AND a.st_time < @hi
                     ON CONFLICT (onid, tsid, sid, event_id) DO UPDATE SET
                         start_time   = EXCLUDED.start_time,
                         duration_sec = EXCLUDED.duration_sec,
-                        event_name   = EXCLUDED.event_name,
-                        short_text   = EXCLUDED.short_text,
-                        ext_text     = EXCLUDED.ext_text,
+                        episode_id   = EXCLUDED.episode_id,
                         updated_at   = EXCLUDED.updated_at
                     """;
                 cmd.Parameters.AddWithValue("@lo", lo);
